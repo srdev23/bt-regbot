@@ -56,11 +56,13 @@ class OrderStore:
         return orders
 
     def list_active(self) -> list[RegistrationOrder]:
-        return [
-            o
-            for o in self.list_all()
-            if o.status == OrderStatus.ACTIVE and not o.is_expired()
-        ]
+        return [o for o in self.list_all() if o.is_active()]
+
+    def list_active_for_user(self, user_id: int, *, limit: int | None = None) -> list[RegistrationOrder]:
+        orders = [o for o in self.list_for_user(user_id, statuses={OrderStatus.ACTIVE}) if o.is_active()]
+        if limit is not None:
+            orders = orders[:limit]
+        return orders
 
     def list_for_user(
         self,
@@ -84,6 +86,9 @@ class OrderStore:
             for o in self.list_for_user(user_id)
             if o.id.lower().startswith(prefix)
         ]
+
+    def find_active_for_user(self, user_id: int, id_prefix: str) -> list[RegistrationOrder]:
+        return [o for o in self.find_for_user(user_id, id_prefix) if o.is_active()]
 
     def purge_inactive(
         self,

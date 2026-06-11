@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
@@ -46,6 +46,7 @@ class RegistrationOrder:
     last_price: float | None = None
     last_price_at: str | None = None
     last_price_notify_at: str | None = None
+    price_message_id: int | None = None
     last_error: str | None = None
     last_tx_id: str | None = None
 
@@ -59,13 +60,11 @@ class RegistrationOrder:
         wallet_name: str,
         hotkey: str,
         reg_at: float,
-        reg_n: int,
         duration_sec: int,
         poll_interval_sec: int,
+        reg_n: int = 1,
     ) -> "RegistrationOrder":
         now = utc_now()
-        from datetime import timedelta
-
         return cls(
             id=str(uuid4()),
             user_id=user_id,
@@ -82,6 +81,9 @@ class RegistrationOrder:
 
     def is_expired(self) -> bool:
         return utc_now() >= parse_iso(self.expires_at)
+
+    def is_active(self) -> bool:
+        return self.status == OrderStatus.ACTIVE and not self.is_expired()
 
     def remaining_sec(self) -> int:
         return max(0, int((parse_iso(self.expires_at) - utc_now()).total_seconds()))
@@ -111,6 +113,7 @@ class RegistrationOrder:
             last_price=data.get("last_price"),
             last_price_at=data.get("last_price_at"),
             last_price_notify_at=data.get("last_price_notify_at"),
+            price_message_id=data.get("price_message_id"),
             last_error=data.get("last_error"),
             last_tx_id=data.get("last_tx_id"),
         )

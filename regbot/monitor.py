@@ -5,8 +5,10 @@ import logging
 
 from regbot.chain import ChainService
 from regbot.formatting import (
+    hotkey_already_registered_message,
     order_completed_message,
     order_expired_message,
+    order_failed_message,
     price_hit_message,
     price_update_message,
     registration_failed_message,
@@ -45,6 +47,10 @@ class OrderMonitor:
         self._wallet_lock_notified: set[str] = set()
         self._lock = asyncio.Lock()
 
+    @property
+    def active_count(self) -> int:
+        return len(self._tasks)
+
     async def start(self) -> None:
         for order in self.store.list_active():
             await self.track(order.id)
@@ -68,30 +74,49 @@ class OrderMonitor:
         async with self._lock:
             task = self._tasks.pop(order_id, None)
         self._wallet_lock_notified.discard(order_id)
-        await self.notifier.clear_price_panel(order_id)
+        order = self.store.load(order_id)
+        if order:
+            await self._remove_price_message(order)
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+    async def _remove_price_message(self, order: RegistrationOrder) -> None:
+        if order.price_message_id is None:
+            return
+        await self.notifier.delete_message(order.chat_id, order.price_message_id)
+        order.price_message_id = None
+
+    async def _finish_order(
+        self,
+        order: RegistrationOrder,
+        status: OrderStatus,
+        message: str,
+        *,
+        remove_price: bool = True,
+    ) -> None:
+        order.status = status
+        if remove_price:
+            await self._remove_price_message(order)
+        self.store.save(order)
+        await self.notifier.send(order.chat_id, message)
 
     async def _run_order(self, order_id: str) -> None:
         try:
             while True:
                 order = self.store.load(order_id)
-                if order is None or order.status != OrderStatus.ACTIVE:
+                if order is None or not order.is_active():
                     return
 
                 if order.is_expired():
-                    order.status = OrderStatus.EXPIRED
-                    self.store.save(order)
-                    await self.notifier.clear_price_panel(order.id)
-                    await self.notifier.send(
-                        order.chat_id,
-                        order_expired_message(order),
+                    await self._finish_order(
+                        order, OrderStatus.EXPIRED, order_expired_message(order)
                     )
                     return
 
                 try:
-                    await self._tick(order)
+                    if await self._tick(order):
+                        return
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -102,61 +127,62 @@ class OrderMonitor:
                         self.store.save(order)
 
                 order = self.store.load(order_id)
-                if order is None or order.status != OrderStatus.ACTIVE:
+                if order is None or not order.is_active():
                     return
                 await asyncio.sleep(order.poll_interval_sec)
         except asyncio.CancelledError:
             logger.info("Stopped monitoring order %s", order_id)
 
-    async def _tick(self, order: RegistrationOrder) -> None:
+    def _should_notify_price(self, order: RegistrationOrder) -> bool:
+        if order.last_price_notify_at is None:
+            return True
+        elapsed = (utc_now() - parse_iso(order.last_price_notify_at)).total_seconds()
+        return elapsed >= self.price_notify_interval_sec
+
+    async def _notify_price(self, order: RegistrationOrder) -> None:
+        order.last_price_notify_at = iso(utc_now())
+        balance = await self.chain.get_coldkey_balance_tao(
+            order.wallet_name, self.wallet_path, order.hotkey
+        )
+        message_id = await self.notifier.refresh_price_message(
+            order.chat_id,
+            price_update_message(order, order.remaining_sec(), balance),
+            old_message_id=order.price_message_id,
+        )
+        if message_id is not None:
+            order.price_message_id = message_id
+
+    async def _tick(self, order: RegistrationOrder) -> bool:
+        """Run one monitor cycle. Returns True when monitoring should stop."""
         if not await self.chain.subnet_exists(order.netuid):
-            order.status = OrderStatus.FAILED
             order.last_error = f"Subnet {order.netuid} does not exist"
-            self.store.save(order)
-            await self.notifier.clear_price_panel(order.id)
-            await self.notifier.send(
-                order.chat_id,
-                f"❌ <b>Order failed</b>\nSubnet SN{order.netuid} not found.",
+            await self._finish_order(
+                order,
+                OrderStatus.FAILED,
+                order_failed_message(order, f"Subnet SN{order.netuid} not found."),
             )
-            return
+            return True
 
         price = await self.chain.get_registration_price(order.netuid)
         order.last_price = price.burn_tao
         order.last_price_at = iso(utc_now())
 
-        should_notify_price = False
-        if order.last_price_notify_at is None:
-            should_notify_price = True
-        else:
-            elapsed = (utc_now() - parse_iso(order.last_price_notify_at)).total_seconds()
-            should_notify_price = elapsed >= self.price_notify_interval_sec
-
-        if should_notify_price:
-            order.last_price_notify_at = iso(utc_now())
-            balance = await self.chain.get_coldkey_balance_tao(
-                order.wallet_name, self.wallet_path, order.hotkey
-            )
-            await self.notifier.update_price_panel(
-                order.id,
-                order.chat_id,
-                price_update_message(order, order.remaining_sec(), balance),
-                lifetime_sec=self.price_notify_interval_sec,
-            )
+        if self._should_notify_price(order):
+            await self._notify_price(order)
 
         self.store.save(order)
 
         if order.registrations_done >= order.reg_n:
-            order.status = OrderStatus.COMPLETED
-            self.store.save(order)
-            await self.notifier.clear_price_panel(order.id)
-            await self.notifier.send(order.chat_id, order_completed_message(order))
-            return
+            await self._finish_order(
+                order, OrderStatus.COMPLETED, order_completed_message(order)
+            )
+            return True
 
         if price.burn_tao > order.reg_at:
-            return
+            return False
 
         if order.id in self._registering:
-            return
+            return False
 
         wallet = self.wallets.get_wallet(order.wallet_name, order.hotkey, self.wallet_path)
         if wallet is None:
@@ -170,21 +196,17 @@ class OrderMonitor:
                     order.chat_id,
                     wallet_locked_message(order, price.burn_tao),
                 )
-            return
+            return False
 
         if await self.chain.is_hotkey_registered(order.netuid, wallet):
             order.registrations_done = order.reg_n
-            order.status = OrderStatus.COMPLETED
             order.last_error = None
-            self.store.save(order)
-            await self.notifier.clear_price_panel(order.id)
-            await self.notifier.send(
-                order.chat_id,
-                f"✅ Hotkey <code>{order.hotkey}</code> already registered on "
-                f"SN{order.netuid}.\n"
-                f"Order <code>{order.id[:8]}</code> marked complete.",
+            await self._finish_order(
+                order,
+                OrderStatus.COMPLETED,
+                hotkey_already_registered_message(order),
             )
-            return
+            return True
 
         await self.notifier.send(
             order.chat_id,
@@ -202,12 +224,9 @@ class OrderMonitor:
             order.registrations_done += 1
             order.last_tx_id = result.extrinsic_id
             order.last_error = None
-            if order.registrations_done >= order.reg_n:
-                order.status = OrderStatus.COMPLETED
-            self.store.save(order)
-            await self.notifier.clear_price_panel(order.id)
-            await self.notifier.send(
-                order.chat_id,
+            await self._finish_order(
+                order,
+                OrderStatus.COMPLETED,
                 registration_success_message(
                     order,
                     uid=result.uid,
@@ -216,10 +235,12 @@ class OrderMonitor:
                     message=result.message,
                 ),
             )
-        else:
-            order.last_error = result.message
-            self.store.save(order)
-            await self.notifier.send(
-                order.chat_id,
-                registration_failed_message(order, result.message),
-            )
+            return True
+
+        order.last_error = result.message
+        self.store.save(order)
+        await self.notifier.send(
+            order.chat_id,
+            registration_failed_message(order, result.message),
+        )
+        return False

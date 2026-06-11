@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime
 
 from regbot.models import OrderStatus, RegistrationOrder, parse_iso
 
@@ -223,6 +222,22 @@ def registration_success_message(
     return "\n".join(lines)
 
 
+def order_failed_message(order: RegistrationOrder, reason: str) -> str:
+    return (
+        f"❌ <b>Order failed</b>\n"
+        f"SN{order.netuid} · <code>{esc(order.id[:8])}</code>\n"
+        f"{esc(reason)}"
+    )
+
+
+def hotkey_already_registered_message(order: RegistrationOrder) -> str:
+    return (
+        f"✅ Hotkey <code>{esc(order.hotkey)}</code> already registered on "
+        f"SN{order.netuid}.\n"
+        f"Order <code>{esc(order.id[:8])}</code> marked complete."
+    )
+
+
 def registration_failed_message(order: RegistrationOrder, error: str) -> str:
     return (
         f"❌ <b>Registration failed</b>\n"
@@ -256,7 +271,9 @@ def wallet_locked_message(order: RegistrationOrder, price_tao: float) -> str:
     )
 
 
-def confirm_order_message(draft: dict, balance: float | None = None) -> str:
+def confirm_order_message(
+    draft: dict, balance: float | None = None, *, slippage_pct: float = 0.5
+) -> str:
     lines = [
         f"📋 <b>Confirm order</b>",
         divider(),
@@ -270,7 +287,7 @@ def confirm_order_message(draft: dict, balance: float | None = None) -> str:
             f"Target {fmt_tao(float(draft['reg_at']))}",
             f"Duration <b>{fmt_duration_short(int(draft['duration_sec']))}</b>",
             f"Poll every <b>{draft['poll_interval_sec']}s</b>",
-            f"Slippage <b>0.5%</b>",
+            f"Slippage <b>{slippage_pct:g}%</b>",
         ]
     )
     if balance is not None and balance < float(draft["reg_at"]):
@@ -278,11 +295,15 @@ def confirm_order_message(draft: dict, balance: float | None = None) -> str:
     return "\n".join(lines)
 
 
-def status_summary(active: list[RegistrationOrder]) -> str:
+def status_summary(
+    active: list[RegistrationOrder],
+    balances: dict[str, float | None] | None = None,
+) -> str:
     if not active:
         return f"{header('Status', 'No active monitoring')}\n\nUse /addorder to start."
     lines = [header("Monitoring Status", f"{len(active)} active order(s)"), ""]
     for order in active:
-        lines.append(order_card(order))
+        balance = balances.get(order.wallet_name) if balances else None
+        lines.append(order_card(order, balance=balance))
         lines.append("")
     return "\n".join(lines).strip()

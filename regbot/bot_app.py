@@ -57,8 +57,8 @@ def build_application(settings: Settings) -> Application:
         Application.builder()
         .token(settings.telegram_bot_token)
         .concurrent_updates(False)
-        .post_init(_make_post_init(settings, chain, monitor, store, notifier))
-        .post_shutdown(_make_post_shutdown(chain, monitor, notifier))
+        .post_init(_make_post_init(settings, chain, monitor, store))
+        .post_shutdown(_make_post_shutdown(chain, monitor))
         .build()
     )
 
@@ -94,7 +94,7 @@ def build_application(settings: Settings) -> Application:
     return app
 
 
-def _make_post_init(settings: Settings, chain: ChainService, monitor: OrderMonitor, store: OrderStore, notifier: TelegramNotifier):
+def _make_post_init(settings: Settings, chain: ChainService, monitor: OrderMonitor, store: OrderStore):
     async def post_init(app: Application) -> None:
         await chain.connect()
         if settings.order_auto_purge:
@@ -102,16 +102,15 @@ def _make_post_init(settings: Settings, chain: ChainService, monitor: OrderMonit
             if removed:
                 logger.info("Auto-purged %d stale orders (>%d days)", removed, settings.order_history_days)
         await monitor.start()
-        logger.info("Bot started; restored %d active orders", len(monitor._tasks))
+        logger.info("Bot started; restored %d active orders", monitor.active_count)
 
     return post_init
 
 
-def _make_post_shutdown(chain: ChainService, monitor: OrderMonitor, notifier: TelegramNotifier):
+def _make_post_shutdown(chain: ChainService, monitor: OrderMonitor):
     async def post_shutdown(app: Application) -> None:
         await monitor.stop()
         await chain.close()
-        await notifier.shutdown()
         logger.info("Bot stopped")
 
     return post_shutdown

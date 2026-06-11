@@ -15,8 +15,8 @@ from regbot.formatting import (
     fmt_tao,
     wallet_picker_message,
 )
+from regbot.handlers.common import chain, monitor, notifier, settings, store, wallet_path, wallets
 from regbot.models import RegistrationOrder
-from regbot.notifier import TelegramNotifier
 from regbot.wallet_discovery import discover_wallets
 
 logger = logging.getLogger(__name__)
@@ -38,10 +38,6 @@ DURATION_PATTERN = re.compile(
 )
 
 SendFn = Callable[..., Awaitable[Any]]
-
-
-def _notifier(context: ContextTypes.DEFAULT_TYPE) -> TelegramNotifier:
-    return context.application.bot_data["notifier"]
 
 
 def _state(context: ContextTypes.DEFAULT_TYPE) -> str | None:
@@ -88,7 +84,7 @@ def _parse_duration(text: str) -> int | None:
 async def addorder_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["new_order"] = {}
     _set_state(context, NETUID)
-    await _notifier(context).reply_html(
+    await notifier(context).reply_html(
         update.effective_message,
         addorder_step(1, TOTAL_STEPS, "Subnet", "Enter the <b>netuid</b>, e.g. <code>62</code>"),
     )
@@ -98,7 +94,7 @@ async def addorder_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if _state(context) is None:
         return
     _clear_order(context)
-    await _notifier(context).reply_html(update.message, "⛔ Order creation cancelled.")
+    await notifier(context).reply_html(update.message, "⛔ Order creation cancelled.")
 
 
 async def addorder_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -117,7 +113,7 @@ async def addorder_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif state == DURATION:
         await _handle_duration(update, context)
     elif state == POLL_INTERVAL:
-        await _notifier(context).reply_html(
+        await notifier(context).reply_html(
             update.message,
             "Tap an interval button: <b>3s</b>, <b>5s</b>, or <b>10s</b>",
         )
@@ -129,7 +125,7 @@ async def addorder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     data = (query.data or "").strip()
     state = _state(context)
-    notify = _notifier(context)
+    notify = notifier(context)
 
     logger.info("addorder callback data=%r state=%r user=%s", data, state, update.effective_user.id)
 
@@ -173,29 +169,29 @@ async def addorder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def _handle_netuid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    notify = _notifier(context)
+    notify = notifier(context)
     text = update.message.text.strip()
     if not text.isdigit():
         await notify.reply_html(update.message, "Send a valid netuid number.")
         return
 
     netuid = int(text)
-    chain = context.application.bot_data["chain"]
+    svc = chain(context)
     await notify.reply_html(update.message, f"🔍 Checking subnet <b>SN{netuid}</b>…")
-    if not await chain.subnet_exists(netuid):
+    if not await svc.subnet_exists(netuid):
         await notify.reply_html(update.message, f"Subnet <b>SN{netuid}</b> does not exist.")
         return
 
     context.user_data["new_order"]["netuid"] = netuid
-    wallet_path = context.application.bot_data["settings"].wallet_path
-    wallets = discover_wallets(wallet_path)
+    path = settings(context).wallet_path
+    wallets = discover_wallets(path)
     if not wallets:
-        await notify.reply_html(update.message, f"No wallets in <code>{esc(wallet_path)}</code>")
+        await notify.reply_html(update.message, f"No wallets in <code>{esc(path)}</code>")
         _clear_order(context)
         return
 
     context.user_data["wallet_choices"] = [{"name": w.name, "hotkeys": list(w.hotkeys)} for w in wallets]
-    balances = await chain.fetch_wallet_balances(str(wallet_path), wallets)
+    balances = await svc.fetch_wallet_balances(str(path), wallets)
     context.user_data["wallet_balances"] = balances
 
     text, markup = _wallet_picker_content(context)
@@ -209,14 +205,14 @@ async def _handle_wallet_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     match = next((w for w in wallets if w["name"].lower() == name.lower()), None)
     if match is None:
         names = ", ".join(f"<code>{esc(w['name'])}</code>" for w in wallets)
-        await _notifier(context).reply_html(
+        await notifier(context).reply_html(
             update.message, f"Unknown wallet. Choose: {names}"
         )
         return
     await _apply_wallet_choice(
         context,
         idx=str(wallets.index(match)),
-        send=_notifier(context).reply_html,
+        send=notifier(context).reply_html,
         target=update.message,
     )
 
@@ -252,10 +248,8 @@ async def _apply_wallet_choice(context, *, idx: str, send: SendFn, target) -> No
     bal_line = f"\nBalance {fmt_tao(balance)}" if balance is not None else ""
 
     netuid = context.user_data["new_order"]["netuid"]
-    chain = context.application.bot_data["chain"]
-    wallet_path = str(context.application.bot_data["settings"].wallet_path)
-    available = await chain.filter_unregistered_hotkeys(
-        netuid, wallet["name"], wallet_path, wallet["hotkeys"]
+    available = await chain(context).filter_unregistered_hotkeys(
+        netuid, wallet["name"], wallet_path(context), wallet["hotkeys"]
     )
     context.user_data["available_hotkeys"] = available
 
@@ -294,13 +288,13 @@ async def _handle_hotkey_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     available = context.user_data.get("available_hotkeys", [])
     if hotkey not in available:
         valid = ", ".join(f"<code>{esc(hk)}</code>" for hk in available)
-        await _notifier(context).reply_html(
+        await notifier(context).reply_html(
             update.message,
             f"Hotkey not available. Choose an unregistered hotkey:\n{valid or 'none — pick another wallet'}",
         )
         return
     await _apply_hotkey_choice(
-        context, hotkey=hotkey, send=_notifier(context).reply_html, target=update.message
+        context, hotkey=hotkey, send=notifier(context).reply_html, target=update.message
     )
 
 
@@ -327,7 +321,7 @@ async def _apply_hotkey_choice(context, *, hotkey: str, send: SendFn, target) ->
 
 
 async def _handle_reg_at(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    notify = _notifier(context)
+    notify = notifier(context)
     try:
         reg_at = float(update.message.text.strip())
         if reg_at <= 0:
@@ -337,7 +331,6 @@ async def _handle_reg_at(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     context.user_data["new_order"]["reg_at"] = reg_at
-    context.user_data["new_order"]["reg_n"] = 1
     await notify.reply_html(
         update.message,
         addorder_step(
@@ -349,7 +342,7 @@ async def _handle_reg_at(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def _handle_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    notify = _notifier(context)
+    notify = notifier(context)
     duration_sec = _parse_duration(update.message.text)
     if duration_sec is None or duration_sec < 60:
         await notify.reply_html(update.message, "Invalid duration. Use <code>30m</code>, <code>6h</code>, etc.")
@@ -374,10 +367,10 @@ async def _handle_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def _apply_poll_choice(context, poll: int, *, send: SendFn, target) -> None:
     context.user_data["new_order"]["poll_interval_sec"] = poll
     wallet_name = context.user_data["new_order"]["wallet_name"]
-    wallet_sessions = context.application.bot_data["wallets"]
-    wallet_path = str(context.application.bot_data["settings"].wallet_path)
-    if wallet_sessions.has_password(wallet_name) or wallet_sessions.try_unlock_passwordless(
-        wallet_name, context.user_data["new_order"]["hotkey"], wallet_path
+    sessions = wallets(context)
+    path = wallet_path(context)
+    if sessions.has_password(wallet_name) or sessions.try_unlock_passwordless(
+        wallet_name, context.user_data["new_order"]["hotkey"], path
     ):
         await _show_confirm(send, target, context)
         return
@@ -391,7 +384,7 @@ async def _apply_poll_choice(context, poll: int, *, send: SendFn, target) -> Non
 
 
 async def _handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    notify = _notifier(context)
+    notify = notifier(context)
     password = update.message.text
     try:
         await update.message.delete()
@@ -400,13 +393,13 @@ async def _handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     wallet_name = context.user_data["new_order"]["wallet_name"]
     hotkey = context.user_data["new_order"]["hotkey"]
-    wallet_path = str(context.application.bot_data["settings"].wallet_path)
-    wallet_sessions = context.application.bot_data["wallets"]
-    wallet_sessions.set_password(wallet_name, password)
+    path = wallet_path(context)
+    sessions = wallets(context)
+    sessions.set_password(wallet_name, password)
     try:
-        wallet_sessions.unlock(wallet_name, hotkey, wallet_path)
+        sessions.unlock(wallet_name, hotkey, path)
     except ValueError as exc:
-        wallet_sessions.forget(wallet_name)
+        sessions.forget(wallet_name)
         await notify.reply_html(update.message, f"{esc(exc)}\nSend password again:")
         return
 
@@ -416,10 +409,9 @@ async def _handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def _show_confirm(send: SendFn, target, context: ContextTypes.DEFAULT_TYPE) -> None:
     draft = context.user_data["new_order"]
-    chain = context.application.bot_data["chain"]
-    wallet_path = str(context.application.bot_data["settings"].wallet_path)
-    balance = await chain.get_coldkey_balance_tao(
-        draft["wallet_name"], wallet_path, draft["hotkey"]
+    cfg = settings(context)
+    balance = await chain(context).get_coldkey_balance_tao(
+        draft["wallet_name"], wallet_path(context), draft["hotkey"]
     )
     buttons = [
         [
@@ -429,7 +421,7 @@ async def _show_confirm(send: SendFn, target, context: ContextTypes.DEFAULT_TYPE
     ]
     await send(
         target,
-        confirm_order_message(draft, balance),
+        confirm_order_message(draft, balance, slippage_pct=cfg.slippage_tolerance * 100),
         reply_markup=InlineKeyboardMarkup(buttons),
     )
     _set_state(context, CONFIRM)
@@ -458,15 +450,12 @@ async def _apply_confirm(
         wallet_name=draft["wallet_name"],
         hotkey=draft["hotkey"],
         reg_at=draft["reg_at"],
-        reg_n=draft.get("reg_n", 1),
         duration_sec=draft["duration_sec"],
         poll_interval_sec=draft["poll_interval_sec"],
     )
 
-    store = context.application.bot_data["store"]
-    monitor = context.application.bot_data["monitor"]
-    store.save(order)
-    await monitor.track(order.id)
+    store(context).save(order)
+    await monitor(context).track(order.id)
 
     await send(
         target,
