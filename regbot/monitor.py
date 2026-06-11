@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from bittensor_wallet.errors import PasswordError
+
 from regbot.chain import ChainService
 from regbot.formatting import (
     hotkey_already_registered_message,
@@ -203,6 +205,23 @@ class OrderMonitor:
                     order.chat_id,
                     wallet_locked_message(order, price.burn_tao),
                 )
+            return False
+
+        self._wallet_lock_notified.discard(order.id)
+
+        # Ensure bittensor's unlock_coldkey() can read the password from env.
+        try:
+            wallet.unlock_coldkey()
+        except PasswordError:
+            self.wallets.forget(order.wallet_name)
+            order.last_error = (
+                f"Wallet locked: unlock {order.wallet_name} with /unlock"
+            )
+            self.store.save(order)
+            await self.notifier.send(
+                order.chat_id,
+                wallet_locked_message(order, price.burn_tao),
+            )
             return False
 
         if await self.chain.is_hotkey_registered(order.netuid, wallet):

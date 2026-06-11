@@ -253,7 +253,7 @@ async def unlock_password_msg(update: Update, context: ContextTypes.DEFAULT_TYPE
     sessions = wallets(context)
     sessions.set_password(wallet_name, password)
     try:
-        sessions.unlock(wallet_name, wallet_info.hotkeys[0], path)
+        sessions.unlock_all_hotkeys(wallet_name, wallet_info.hotkeys, path)
     except ValueError as exc:
         sessions.forget(wallet_name)
         await notifier(context).reply_html(update.message, f"Unlock failed: {esc(exc)}")
@@ -261,5 +261,6 @@ async def unlock_password_msg(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await notifier(context).reply_html(
         update.message,
-        f"✅ Wallet <code>{esc(wallet_name)}</code> unlocked for this session.",
+        f"✅ Wallet <code>{esc(wallet_name)}</code> unlocked for this session.\n"
+        f"<i>{len(wallet_info.hotkeys)} hotkey(s) ready.</i>",
     )
