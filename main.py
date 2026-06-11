@@ -10,11 +10,17 @@ from regbot.bot_app import build_application
 from regbot.config import Settings
 
 
-def main() -> None:
+def _configure_logging() -> None:
     logging.basicConfig(
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         level=logging.INFO,
     )
+    for name in ("httpx", "httpcore", "telegram", "telegram.ext"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def main() -> None:
+    _configure_logging()
     try:
         settings = Settings.load()
     except RuntimeError as exc:

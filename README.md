@@ -58,6 +58,7 @@ TELEGRAM_BOT_TOKEN=your_bot_token
 | `ORDERS_DIR` | `./data/orders` | Order JSON storage |
 | `SLIPPAGE_TOLERANCE` | `0.005` | 0.5% slippage on registration |
 | `PRICE_NOTIFY_INTERVAL_SEC` | `60` | How often to rotate the price message (send new, delete old) |
+| `TELEGRAM_CHAT_MIN_INTERVAL_SEC` | `1.2` | Min seconds between Telegram API calls per chat (avoids 429) |
 | `ORDER_LIST_LIMIT` | `10` | Max active orders shown in `/orders` |
 | `ORDER_HISTORY_LIMIT` | `15` | Max history orders shown |
 | `ORDER_HISTORY_DAYS` | `30` | Purge finished orders older than N days |

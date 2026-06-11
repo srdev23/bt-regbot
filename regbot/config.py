@@ -17,6 +17,7 @@ class Settings:
     orders_dir: Path
     slippage_tolerance: float
     price_notify_interval_sec: int
+    telegram_chat_min_interval_sec: float
     order_list_limit: int
     order_history_limit: int
     order_history_days: int
@@ -39,6 +40,9 @@ class Settings:
             orders_dir=Path(os.getenv("ORDERS_DIR", base / "data" / "orders")),
             slippage_tolerance=float(os.getenv("SLIPPAGE_TOLERANCE", "0.005")),
             price_notify_interval_sec=int(os.getenv("PRICE_NOTIFY_INTERVAL_SEC", "60")),
+            telegram_chat_min_interval_sec=float(
+                os.getenv("TELEGRAM_CHAT_MIN_INTERVAL_SEC", "1.2")
+            ),
             order_list_limit=int(os.getenv("ORDER_LIST_LIMIT", "10")),
             order_history_limit=int(os.getenv("ORDER_HISTORY_LIMIT", "15")),
             order_history_days=int(os.getenv("ORDER_HISTORY_DAYS", "30")),

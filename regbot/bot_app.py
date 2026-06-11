@@ -42,7 +42,7 @@ def build_application(settings: Settings) -> Application:
     store = OrderStore(settings.orders_dir)
     chain = ChainService(settings.bittensor_network)
     wallets = WalletSessionManager()
-    notifier = TelegramNotifier()
+    notifier = TelegramNotifier(chat_min_interval_sec=settings.telegram_chat_min_interval_sec)
     monitor = OrderMonitor(
         store=store,
         chain=chain,

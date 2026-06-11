@@ -133,14 +133,19 @@ class OrderMonitor:
         except asyncio.CancelledError:
             logger.info("Stopped monitoring order %s", order_id)
 
+    def _notify_phase_sec(self, order_id: str) -> int:
+        """Stagger orders in the same chat across the notify window."""
+        spread = max(1, min(30, self.price_notify_interval_sec // 2))
+        return int(order_id[:8], 16) % spread
+
     def _should_notify_price(self, order: RegistrationOrder) -> bool:
         if order.last_price_notify_at is None:
-            return True
+            created_elapsed = (utc_now() - parse_iso(order.created_at)).total_seconds()
+            return created_elapsed >= self._notify_phase_sec(order.id)
         elapsed = (utc_now() - parse_iso(order.last_price_notify_at)).total_seconds()
         return elapsed >= self.price_notify_interval_sec
 
     async def _notify_price(self, order: RegistrationOrder) -> None:
-        order.last_price_notify_at = iso(utc_now())
         balance = await self.chain.get_coldkey_balance_tao(
             order.wallet_name, self.wallet_path, order.hotkey
         )
@@ -149,8 +154,10 @@ class OrderMonitor:
             price_update_message(order, order.remaining_sec(), balance),
             old_message_id=order.price_message_id,
         )
-        if message_id is not None:
-            order.price_message_id = message_id
+        if message_id is None:
+            return
+        order.price_message_id = message_id
+        order.last_price_notify_at = iso(utc_now())
 
     async def _tick(self, order: RegistrationOrder) -> bool:
         """Run one monitor cycle. Returns True when monitoring should stop."""
