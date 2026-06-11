@@ -1,0 +1,4 @@
+python-telegram-bot>=22.0
+python-dotenv>=1.0
+bittensor-cli>=9.22
+bittensor-wallet>=4.1
