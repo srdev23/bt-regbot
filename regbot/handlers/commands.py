@@ -259,6 +259,8 @@ async def unlock_password_msg(update: Update, context: ContextTypes.DEFAULT_TYPE
         await notifier(context).reply_html(update.message, f"Unlock failed: {esc(exc)}")
         return
 
+    monitor(context).clear_wallet_lock_notified(wallet_name)
+
     await notifier(context).reply_html(
         update.message,
         f"✅ Wallet <code>{esc(wallet_name)}</code> unlocked for this session.\n"

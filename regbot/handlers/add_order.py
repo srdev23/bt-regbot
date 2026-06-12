@@ -404,6 +404,7 @@ async def _handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     await notify.reply_html(update.message, "✅ Password accepted.")
+    monitor(context).clear_wallet_lock_notified(wallet_name)
     await _show_confirm(notify.reply_html, update.message, context)
 
 

@@ -12,8 +12,10 @@ from bittensor_cli.src.bittensor.extrinsics.registration import (
 from bittensor_cli.src.bittensor.subtensor_interface import SubtensorInterface
 from bittensor_cli.src.bittensor.utils import get_hotkey_pub_ss58
 from bittensor_wallet import Wallet
+from bittensor_wallet.errors import KeyFileError, PasswordError
 
 from regbot.wallet_discovery import WalletInfo
+from regbot.wallet_session import WalletSessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -115,52 +117,125 @@ class ChainService:
         results = await asyncio.gather(*(_check(hk) for hk in hotkeys))
         return [hk for hk, available in results if available]
 
+    @staticmethod
+    def _ensure_wallet_unlocked(wallet: Wallet, password: str | None) -> RegistrationResult | None:
+        """Refresh env + unlock coldkey. Returns RegistrationResult on failure."""
+        if password is None:
+            return RegistrationResult(
+                success=False,
+                message="Wallet password not available in session. Use /unlock.",
+                extrinsic_id=None,
+            )
+        try:
+            WalletSessionManager.install_password_env(wallet, password)
+            wallet.unlock_coldkey()
+        except PasswordError:
+            return RegistrationResult(
+                success=False,
+                message="The password used to decrypt your Coldkey Keyfile is invalid.",
+                extrinsic_id=None,
+            )
+        except KeyFileError as exc:
+            return RegistrationResult(
+                success=False,
+                message=f"Cannot read wallet keyfile: {exc}",
+                extrinsic_id=None,
+            )
+        except Exception as exc:
+            return RegistrationResult(
+                success=False,
+                message=f"Wallet unlock failed: {exc}",
+                extrinsic_id=None,
+            )
+        return None
+
     async def register(
         self,
         wallet: Wallet,
         netuid: int,
         *,
         slippage: float,
+        password: str | None = None,
+        target_price: float | None = None,
     ) -> RegistrationResult:
-        price = await self.get_registration_price(netuid)
-        balance = await self.subtensor.get_balance(wallet.coldkeypub.ss58_address)
+        """Submit a burned registration extrinsic with full error handling."""
+        log_ctx = f"SN{netuid} {wallet.name}/{wallet.hotkey_str}"
+        try:
+            unlock_err = self._ensure_wallet_unlocked(wallet, password)
+            if unlock_err is not None:
+                logger.warning("Register aborted (%s): %s", log_ctx, unlock_err.message)
+                return unlock_err
 
-        if balance < price.burn:
-            return RegistrationResult(
-                success=False,
-                message=(
+            price = await self.get_registration_price(netuid)
+            if target_price is not None and price.burn_tao > target_price:
+                msg = (
+                    f"Price moved above target before submit: "
+                    f"{price.burn_tao:.6f} > {target_price:.6f} TAO"
+                )
+                logger.info("Register skipped (%s): %s", log_ctx, msg)
+                return RegistrationResult(success=False, message=msg, extrinsic_id=None)
+
+            balance = await self.subtensor.get_balance(wallet.coldkeypub.ss58_address)
+            if balance < price.burn:
+                msg = (
                     f"Insufficient balance: {balance.tao:.6f} TAO, "
                     f"need {price.burn.tao:.6f} TAO"
-                ),
+                )
+                logger.warning("Register aborted (%s): %s", log_ctx, msg)
+                return RegistrationResult(success=False, message=msg, extrinsic_id=None)
+
+            limit_price = price.burn_tao * (1.0 + slippage)
+            logger.info(
+                "Submitting registration (%s) price=%.6f limit=%.6f",
+                log_ctx,
+                price.burn_tao,
+                limit_price,
+            )
+
+            # Re-install env immediately before extrinsic (unlock_key runs inside btcli).
+            unlock_err = self._ensure_wallet_unlocked(wallet, password)
+            if unlock_err is not None:
+                return unlock_err
+
+            success, message, ext_id = await burned_register_extrinsic(
+                self.subtensor,
+                wallet=wallet,
+                netuid=netuid,
+                old_balance=balance,
+                wait_for_inclusion=True,
+                wait_for_finalization=False,
+                limit=limit_price,
+            )
+
+            uid = None
+            if success:
+                block_hash = await self.subtensor.substrate.get_chain_head()
+                uid_raw = await self.subtensor.query(
+                    "SubtensorModule",
+                    "Uids",
+                    [netuid, get_hotkey_pub_ss58(wallet)],
+                    block_hash=block_hash,
+                )
+                uid = int(uid_raw) if uid_raw is not None else None
+                logger.info(
+                    "Registration success (%s) uid=%s tx=%s", log_ctx, uid, ext_id
+                )
+            else:
+                logger.warning("Registration failed (%s): %s", log_ctx, message)
+
+            return RegistrationResult(
+                success=success,
+                message=message,
+                extrinsic_id=ext_id,
+                uid=uid,
+                paid_tao=price.burn_tao if success else None,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Registration exception (%s)", log_ctx)
+            return RegistrationResult(
+                success=False,
+                message=f"Registration error: {exc}",
                 extrinsic_id=None,
             )
-
-        limit_price = price.burn_tao * (1.0 + slippage)
-        success, message, ext_id = await burned_register_extrinsic(
-            self.subtensor,
-            wallet=wallet,
-            netuid=netuid,
-            old_balance=balance,
-            wait_for_inclusion=True,
-            wait_for_finalization=False,
-            limit=limit_price,
-        )
-
-        uid = None
-        if success:
-            block_hash = await self.subtensor.substrate.get_chain_head()
-            uid_raw = await self.subtensor.query(
-                "SubtensorModule",
-                "Uids",
-                [netuid, get_hotkey_pub_ss58(wallet)],
-                block_hash=block_hash,
-            )
-            uid = int(uid_raw) if uid_raw is not None else None
-
-        return RegistrationResult(
-            success=success,
-            message=message,
-            extrinsic_id=ext_id,
-            uid=uid,
-            paid_tao=price.burn_tao,
-        )

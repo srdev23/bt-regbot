@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from bittensor_wallet.errors import PasswordError
-
 from regbot.chain import ChainService
 from regbot.formatting import (
     hotkey_already_registered_message,
@@ -48,6 +46,11 @@ class OrderMonitor:
         self._registering: set[str] = set()
         self._wallet_lock_notified: set[str] = set()
         self._lock = asyncio.Lock()
+
+    def clear_wallet_lock_notified(self, wallet_name: str) -> None:
+        for order in self.store.list_active():
+            if order.wallet_name == wallet_name:
+                self._wallet_lock_notified.discard(order.id)
 
     @property
     def active_count(self) -> int:
@@ -191,59 +194,124 @@ class OrderMonitor:
             return False
 
         if order.id in self._registering:
+            logger.debug(
+                "Registration in progress order=%s wallet=%s/%s",
+                order.id[:8],
+                order.wallet_name,
+                order.hotkey,
+            )
             return False
 
-        wallet = self.wallets.get_wallet(order.wallet_name, order.hotkey, self.wallet_path)
-        if wallet is None:
-            if order.id not in self._wallet_lock_notified:
-                self._wallet_lock_notified.add(order.id)
-                order.last_error = (
-                    f"Wallet locked: unlock {order.wallet_name} with /unlock"
+        logger.info(
+            "Target hit order=%s SN%d wallet=%s/%s price=%.6f target=%.6f",
+            order.id[:8],
+            order.netuid,
+            order.wallet_name,
+            order.hotkey,
+            price.burn_tao,
+            order.reg_at,
+        )
+        return await self._attempt_registration(order, price.burn_tao)
+
+    async def _notify_wallet_locked(
+        self, order: RegistrationOrder, price_tao: float, detail: str
+    ) -> None:
+        order.last_error = detail
+        self.store.save(order)
+        if order.id not in self._wallet_lock_notified:
+            self._wallet_lock_notified.add(order.id)
+            await self.notifier.send(
+                order.chat_id,
+                wallet_locked_message(order, price_tao),
+            )
+        logger.warning(
+            "Wallet not ready order=%s wallet=%s/%s: %s",
+            order.id[:8],
+            order.wallet_name,
+            order.hotkey,
+            detail,
+        )
+
+    async def _attempt_registration(
+        self, order: RegistrationOrder, price_tao: float
+    ) -> bool:
+        """Try to register when price target is hit. Returns True if order finished."""
+        if not self.wallets.has_password(order.wallet_name):
+            await self._notify_wallet_locked(
+                order,
+                price_tao,
+                f"Wallet locked: unlock {order.wallet_name} with /unlock",
+            )
+            return False
+
+        async with self.wallets.signing(order.wallet_name):
+            try:
+                wallet = await asyncio.to_thread(
+                    self.wallets.prepare_for_signing,
+                    order.wallet_name,
+                    order.hotkey,
+                    self.wallet_path,
                 )
+            except Exception as exc:
+                await self._notify_wallet_locked(order, price_tao, str(exc))
+                return False
+
+            self._wallet_lock_notified.discard(order.id)
+
+            try:
+                if await self.chain.is_hotkey_registered(order.netuid, wallet):
+                    order.registrations_done = order.reg_n
+                    order.last_error = None
+                    await self._finish_order(
+                        order,
+                        OrderStatus.COMPLETED,
+                        hotkey_already_registered_message(order),
+                    )
+                    return True
+
+                fresh_price = await self.chain.get_registration_price(order.netuid)
+                if fresh_price.burn_tao > order.reg_at:
+                    logger.info(
+                        "Price rose before submit order=%s price=%.6f target=%.6f",
+                        order.id[:8],
+                        fresh_price.burn_tao,
+                        order.reg_at,
+                    )
+                    return False
+
+                await self.notifier.send(
+                    order.chat_id,
+                    price_hit_message(order, fresh_price.burn_tao, self.slippage * 100),
+                )
+
+                self._registering.add(order.id)
+                try:
+                    result = await self.chain.register(
+                        wallet,
+                        order.netuid,
+                        slippage=self.slippage,
+                        password=self.wallets.get_password(order.wallet_name),
+                        target_price=order.reg_at,
+                    )
+                finally:
+                    self._registering.discard(order.id)
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "Registration crashed order=%s wallet=%s/%s",
+                    order.id,
+                    order.wallet_name,
+                    order.hotkey,
+                )
+                order.last_error = str(exc)
                 self.store.save(order)
                 await self.notifier.send(
                     order.chat_id,
-                    wallet_locked_message(order, price.burn_tao),
+                    registration_failed_message(order, str(exc)),
                 )
-            return False
-
-        self._wallet_lock_notified.discard(order.id)
-
-        # Ensure bittensor's unlock_coldkey() can read the password from env.
-        try:
-            wallet.unlock_coldkey()
-        except PasswordError:
-            self.wallets.forget(order.wallet_name)
-            order.last_error = (
-                f"Wallet locked: unlock {order.wallet_name} with /unlock"
-            )
-            self.store.save(order)
-            await self.notifier.send(
-                order.chat_id,
-                wallet_locked_message(order, price.burn_tao),
-            )
-            return False
-
-        if await self.chain.is_hotkey_registered(order.netuid, wallet):
-            order.registrations_done = order.reg_n
-            order.last_error = None
-            await self._finish_order(
-                order,
-                OrderStatus.COMPLETED,
-                hotkey_already_registered_message(order),
-            )
-            return True
-
-        await self.notifier.send(
-            order.chat_id,
-            price_hit_message(order, price.burn_tao, self.slippage * 100),
-        )
-
-        self._registering.add(order.id)
-        try:
-            result = await self.chain.register(wallet, order.netuid, slippage=self.slippage)
-        finally:
-            self._registering.discard(order.id)
+                return False
 
         order = self.store.load(order.id) or order
         if result.success:
@@ -265,8 +333,24 @@ class OrderMonitor:
 
         order.last_error = result.message
         self.store.save(order)
+        retryable = any(
+            token in result.message.lower()
+            for token in (
+                "invalid",
+                "password",
+                "unlock",
+                "insufficient",
+                "price moved",
+            )
+        )
+        if "password" in result.message.lower() or "invalid" in result.message.lower():
+            self._wallet_lock_notified.discard(order.id)
         await self.notifier.send(
             order.chat_id,
             registration_failed_message(order, result.message),
         )
+        if retryable:
+            logger.info(
+                "Registration will retry order=%s: %s", order.id[:8], result.message
+            )
         return False
