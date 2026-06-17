@@ -5,6 +5,7 @@ import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from regbot.chain import ChainConnectionError
 from regbot.formatting import (
     esc,
     fmt_tao,

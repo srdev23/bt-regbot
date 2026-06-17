@@ -15,7 +15,7 @@ def _configure_logging() -> None:
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         level=logging.INFO,
     )
-    for name in ("httpx", "httpcore", "telegram", "telegram.ext"):
+    for name in ("httpx", "httpcore", "telegram", "telegram.ext", "async_substrate_interface"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
 

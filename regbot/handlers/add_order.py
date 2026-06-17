@@ -8,6 +8,7 @@ from typing import Any
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from regbot.chain import ChainConnectionError
 from regbot.formatting import (
     addorder_step,
     confirm_order_message,
@@ -102,23 +103,29 @@ async def addorder_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if state is None:
         return
 
-    if state == NETUID:
-        await _handle_netuid(update, context)
-    elif state == WALLET:
-        await _handle_wallet_text(update, context)
-    elif state == HOTKEY:
-        await _handle_hotkey_text(update, context)
-    elif state == REG_AT:
-        await _handle_reg_at(update, context)
-    elif state == DURATION:
-        await _handle_duration(update, context)
-    elif state == POLL_INTERVAL:
+    try:
+        if state == NETUID:
+            await _handle_netuid(update, context)
+        elif state == WALLET:
+            await _handle_wallet_text(update, context)
+        elif state == HOTKEY:
+            await _handle_hotkey_text(update, context)
+        elif state == REG_AT:
+            await _handle_reg_at(update, context)
+        elif state == DURATION:
+            await _handle_duration(update, context)
+        elif state == POLL_INTERVAL:
+            await notifier(context).reply_html(
+                update.message,
+                "Tap an interval button: <b>3s</b>, <b>5s</b>, or <b>10s</b>",
+            )
+        elif state == PASSWORD:
+            await _handle_password(update, context)
+    except ChainConnectionError:
         await notifier(context).reply_html(
             update.message,
-            "Tap an interval button: <b>3s</b>, <b>5s</b>, or <b>10s</b>",
+            "⚠️ Bittensor chain temporarily unavailable. Please try again shortly.",
         )
-    elif state == PASSWORD:
-        await _handle_password(update, context)
 
 
 async def addorder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -162,6 +169,11 @@ async def addorder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
         else:
             await notify.edit_html(query, "Unknown action. Run /addorder again.")
+    except ChainConnectionError:
+        await notify.edit_html(
+            query,
+            "⚠️ Bittensor chain temporarily unavailable. Please try again shortly.",
+        )
     except Exception:
         logger.exception("addorder callback failed data=%r state=%r", data, state)
         await notify.edit_html(query, "Something went wrong. Run /addorder again.")

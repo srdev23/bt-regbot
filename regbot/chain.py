@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TypeVar
 
 from bittensor_cli.src.bittensor.balances import Balance
 from bittensor_cli.src.bittensor.extrinsics.registration import (
@@ -18,6 +20,34 @@ from regbot.wallet_discovery import WalletInfo
 from regbot.wallet_session import WalletSessionManager
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+_MAX_RPC_ATTEMPTS = 3
+_RECONNECT_BACKOFF_SEC = 2.0
+
+
+class ChainConnectionError(Exception):
+    """Raised when the Bittensor RPC connection cannot be recovered."""
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError, OSError, ConnectionError)):
+        return True
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in (
+            "max retries exceeded",
+            "websocket",
+            "connection closed",
+            "connection reset",
+            "read error",
+            "broken pipe",
+            "timeout",
+            "network",
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -40,16 +70,59 @@ class ChainService:
     def __init__(self, network: str) -> None:
         self.network = network
         self._subtensor: SubtensorInterface | None = None
+        self._reconnect_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         if self._subtensor is None:
             self._subtensor = SubtensorInterface(self.network)
+            await self._subtensor.substrate.initialize()
             logger.info("Connected to Bittensor network: %s", self.network)
 
     async def close(self) -> None:
         if self._subtensor is not None:
-            await self._subtensor.substrate.close()
+            try:
+                await self._subtensor.substrate.close()
+            except Exception:
+                logger.debug("Error closing chain connection", exc_info=True)
             self._subtensor = None
+
+    async def reconnect(self) -> None:
+        async with self._reconnect_lock:
+            logger.warning("Reconnecting to Bittensor network: %s", self.network)
+            await self.close()
+            await self.connect()
+
+    async def health_check(self) -> None:
+        """Lightweight ping; reconnects automatically on failure."""
+        await self._call(lambda: self.subtensor.substrate.get_chain_head())
+
+    async def _call(self, fn: Callable[[], Awaitable[T]]) -> T:
+        """Run a chain RPC with automatic reconnect on transient failures."""
+        last_exc: BaseException | None = None
+        for attempt in range(1, _MAX_RPC_ATTEMPTS + 1):
+            try:
+                await self.connect()
+                return await fn()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not _is_connection_error(exc):
+                    raise
+                last_exc = exc
+                logger.warning(
+                    "Chain RPC failed (attempt %d/%d): %s",
+                    attempt,
+                    _MAX_RPC_ATTEMPTS,
+                    exc,
+                )
+                try:
+                    await self.reconnect()
+                except Exception as reconnect_exc:
+                    logger.warning("Reconnect attempt failed: %s", reconnect_exc)
+                if attempt < _MAX_RPC_ATTEMPTS:
+                    await asyncio.sleep(_RECONNECT_BACKOFF_SEC * attempt)
+
+        raise ChainConnectionError(str(last_exc)) from last_exc
 
     @property
     def subtensor(self) -> SubtensorInterface:
@@ -58,24 +131,37 @@ class ChainService:
         return self._subtensor
 
     async def get_registration_price(self, netuid: int) -> RegistrationPrice:
-        block_hash = await self.subtensor.substrate.get_chain_head()
-        burn_raw = await self.subtensor.get_hyperparameter(
-            "Burn", netuid=netuid, block_hash=block_hash
-        )
-        burn = Balance.from_rao(int(burn_raw)) if burn_raw else Balance(0)
-        return RegistrationPrice(netuid=netuid, burn_tao=float(burn.tao), burn=burn)
+        async def _do() -> RegistrationPrice:
+            block_hash = await self.subtensor.substrate.get_chain_head()
+            burn_raw = await self.subtensor.get_hyperparameter(
+                "Burn", netuid=netuid, block_hash=block_hash
+            )
+            burn = Balance.from_rao(int(burn_raw)) if burn_raw else Balance(0)
+            return RegistrationPrice(netuid=netuid, burn_tao=float(burn.tao), burn=burn)
+
+        return await self._call(_do)
 
     async def subnet_exists(self, netuid: int) -> bool:
-        block_hash = await self.subtensor.substrate.get_chain_head()
-        return await self.subtensor.subnet_exists(netuid=netuid, block_hash=block_hash)
+        async def _do() -> bool:
+            block_hash = await self.subtensor.substrate.get_chain_head()
+            return await self.subtensor.subnet_exists(netuid=netuid, block_hash=block_hash)
+
+        return await self._call(_do)
 
     async def is_hotkey_registered(self, netuid: int, wallet: Wallet) -> bool:
         hotkey = get_hotkey_pub_ss58(wallet)
-        return await is_hotkey_registered(self.subtensor, netuid, hotkey)
+
+        async def _do() -> bool:
+            return await is_hotkey_registered(self.subtensor, netuid, hotkey)
+
+        return await self._call(_do)
 
     async def get_balance_tao(self, wallet: Wallet) -> float:
-        balance = await self.subtensor.get_balance(wallet.coldkeypub.ss58_address)
-        return float(balance.tao)
+        async def _do() -> float:
+            balance = await self.subtensor.get_balance(wallet.coldkeypub.ss58_address)
+            return float(balance.tao)
+
+        return await self._call(_do)
 
     async def get_coldkey_balance_tao(
         self, wallet_name: str, wallet_path: str, hotkey: str
@@ -83,6 +169,9 @@ class ChainService:
         try:
             wallet = Wallet(name=wallet_name, hotkey=hotkey, path=wallet_path)
             return await self.get_balance_tao(wallet)
+        except ChainConnectionError as exc:
+            logger.warning("Balance fetch failed for wallet %s: %s", wallet_name, exc)
+            return None
         except Exception as exc:
             logger.warning("Balance fetch failed for wallet %s: %s", wallet_name, exc)
             return None
@@ -112,10 +201,13 @@ class ChainService:
             registered = await is_hotkey_registered(self.subtensor, netuid, ss58)
             return hotkey, not registered
 
-        if not hotkeys:
-            return []
-        results = await asyncio.gather(*(_check(hk) for hk in hotkeys))
-        return [hk for hk, available in results if available]
+        async def _do() -> list[str]:
+            if not hotkeys:
+                return []
+            results = await asyncio.gather(*(_check(hk) for hk in hotkeys))
+            return [hk for hk, available in results if available]
+
+        return await self._call(_do)
 
     @staticmethod
     def _ensure_wallet_unlocked(wallet: Wallet, password: str | None) -> RegistrationResult | None:
@@ -175,7 +267,9 @@ class ChainService:
                 logger.info("Register skipped (%s): %s", log_ctx, msg)
                 return RegistrationResult(success=False, message=msg, extrinsic_id=None)
 
-            balance = await self.subtensor.get_balance(wallet.coldkeypub.ss58_address)
+            balance = await self._call(
+                lambda: self.subtensor.get_balance(wallet.coldkeypub.ss58_address)
+            )
             if balance < price.burn:
                 msg = (
                     f"Insufficient balance: {balance.tao:.6f} TAO, "
@@ -192,29 +286,34 @@ class ChainService:
                 limit_price,
             )
 
-            # Re-install env immediately before extrinsic (unlock_key runs inside btcli).
             unlock_err = self._ensure_wallet_unlocked(wallet, password)
             if unlock_err is not None:
                 return unlock_err
 
-            success, message, ext_id = await burned_register_extrinsic(
-                self.subtensor,
-                wallet=wallet,
-                netuid=netuid,
-                old_balance=balance,
-                wait_for_inclusion=True,
-                wait_for_finalization=False,
-                limit=limit_price,
+            success, message, ext_id = await self._call(
+                lambda: burned_register_extrinsic(
+                    self.subtensor,
+                    wallet=wallet,
+                    netuid=netuid,
+                    old_balance=balance,
+                    wait_for_inclusion=True,
+                    wait_for_finalization=False,
+                    limit=limit_price,
+                )
             )
 
             uid = None
             if success:
-                block_hash = await self.subtensor.substrate.get_chain_head()
-                uid_raw = await self.subtensor.query(
-                    "SubtensorModule",
-                    "Uids",
-                    [netuid, get_hotkey_pub_ss58(wallet)],
-                    block_hash=block_hash,
+                block_hash = await self._call(
+                    lambda: self.subtensor.substrate.get_chain_head()
+                )
+                uid_raw = await self._call(
+                    lambda: self.subtensor.query(
+                        "SubtensorModule",
+                        "Uids",
+                        [netuid, get_hotkey_pub_ss58(wallet)],
+                        block_hash=block_hash,
+                    )
                 )
                 uid = int(uid_raw) if uid_raw is not None else None
                 logger.info(
@@ -229,6 +328,13 @@ class ChainService:
                 extrinsic_id=ext_id,
                 uid=uid,
                 paid_tao=price.burn_tao if success else None,
+            )
+        except ChainConnectionError as exc:
+            logger.warning("Registration chain error (%s): %s", log_ctx, exc)
+            return RegistrationResult(
+                success=False,
+                message=f"Chain connection lost during registration: {exc}",
+                extrinsic_id=None,
             )
         except asyncio.CancelledError:
             raise

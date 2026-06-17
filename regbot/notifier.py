@@ -41,13 +41,19 @@ class TelegramNotifier:
     def _mark_called(self, chat_id: int) -> None:
         self._last_call[chat_id] = time.monotonic()
 
-    async def send(self, chat_id: int, text: str) -> None:
+    async def send(self, chat_id: int, text: str) -> bool:
         if self._app is None:
-            return
+            return False
         async with self._lock_for(chat_id):
             await self._throttle(chat_id)
-            await self._send_html_with_retry(chat_id=chat_id, text=text)
-            self._mark_called(chat_id)
+            try:
+                await self._send_html_with_retry(chat_id=chat_id, text=text)
+                return True
+            except Exception as exc:
+                logger.warning("Telegram send failed after retries: %s", exc)
+                return False
+            finally:
+                self._mark_called(chat_id)
 
     async def refresh_price_message(
         self,
@@ -62,7 +68,12 @@ class TelegramNotifier:
 
         async with self._lock_for(chat_id):
             await self._throttle(chat_id)
-            message = await self._send_html_with_retry(chat_id=chat_id, text=text)
+            try:
+                message = await self._send_html_with_retry(chat_id=chat_id, text=text)
+            except Exception as exc:
+                logger.warning("Telegram price refresh failed after retries: %s", exc)
+                self._mark_called(chat_id)
+                return None
             self._mark_called(chat_id)
 
             if old_message_id is not None:
@@ -87,8 +98,8 @@ class TelegramNotifier:
                 chat_id=chat_id,
                 message_id=message_id,
             )
-        except TelegramError:
-            pass
+        except Exception:
+            logger.debug("Telegram delete failed", exc_info=True)
 
     async def _send_html_with_retry(self, **kwargs: Any):
         return await self._with_retry(

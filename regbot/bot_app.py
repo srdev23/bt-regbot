@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
-from regbot.chain import ChainService
+from regbot.chain import ChainConnectionError, ChainService
 from regbot.config import Settings
 from regbot.handlers.add_order import (
     addorder_callback,
@@ -34,8 +35,38 @@ from regbot.wallet_session import WalletSessionManager
 logger = logging.getLogger(__name__)
 
 
+_CHAIN_HEALTH_INTERVAL_SEC = 300
+
+
 async def _error_handler(update: object, context) -> None:
-    logger.exception("Unhandled bot error (update=%s)", update, exc_info=context.error)
+    exc = context.error
+    if isinstance(exc, ChainConnectionError):
+        logger.warning("Chain connection error (update=%s): %s", update, exc)
+        if isinstance(update, Update) and update.effective_message:
+            try:
+                await update.effective_message.reply_text(
+                    "⚠️ Bittensor chain temporarily unavailable. "
+                    "The bot reconnects automatically — please try again shortly."
+                )
+            except Exception:
+                pass
+        return
+    logger.exception("Unhandled bot error (update=%s)", update, exc_info=exc)
+
+
+async def _chain_health_loop(chain: ChainService) -> None:
+    while True:
+        await asyncio.sleep(_CHAIN_HEALTH_INTERVAL_SEC)
+        try:
+            await chain.health_check()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Chain health check failed; attempting reconnect", exc_info=True)
+            try:
+                await chain.reconnect()
+            except Exception:
+                logger.exception("Chain reconnect after health check failed")
 
 
 def build_application(settings: Settings) -> Application:
@@ -56,6 +87,10 @@ def build_application(settings: Settings) -> Application:
     app = (
         Application.builder()
         .token(settings.telegram_bot_token)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
         .concurrent_updates(False)
         .post_init(_make_post_init(settings, chain, monitor, store))
         .post_shutdown(_make_post_shutdown(chain, monitor))
@@ -97,6 +132,9 @@ def build_application(settings: Settings) -> Application:
 def _make_post_init(settings: Settings, chain: ChainService, monitor: OrderMonitor, store: OrderStore):
     async def post_init(app: Application) -> None:
         await chain.connect()
+        app.bot_data["chain_health_task"] = asyncio.create_task(
+            _chain_health_loop(chain), name="chain-health"
+        )
         if settings.order_auto_purge:
             removed = store.purge_stale_globally(settings.order_history_days)
             if removed:
@@ -109,6 +147,10 @@ def _make_post_init(settings: Settings, chain: ChainService, monitor: OrderMonit
 
 def _make_post_shutdown(chain: ChainService, monitor: OrderMonitor):
     async def post_shutdown(app: Application) -> None:
+        health = app.bot_data.pop("chain_health_task", None)
+        if health is not None:
+            health.cancel()
+            await asyncio.gather(health, return_exceptions=True)
         await monitor.stop()
         await chain.close()
         logger.info("Bot stopped")

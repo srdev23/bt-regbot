@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from regbot.chain import ChainService
+from regbot.chain import ChainConnectionError
 from regbot.formatting import (
     hotkey_already_registered_message,
     order_completed_message,
@@ -124,6 +125,18 @@ class OrderMonitor:
                         return
                 except asyncio.CancelledError:
                     raise
+                except ChainConnectionError as exc:
+                    logger.warning(
+                        "Chain unavailable for order %s: %s", order_id[:8], exc
+                    )
+                    order = self.store.load(order_id)
+                    if order:
+                        order.last_error = str(exc)
+                        self.store.save(order)
+                        await asyncio.sleep(min(30, order.poll_interval_sec * 3))
+                    else:
+                        await asyncio.sleep(30)
+                    continue
                 except Exception as exc:
                     logger.exception("Monitor tick failed for order %s", order_id)
                     order = self.store.load(order_id)
@@ -178,10 +191,6 @@ class OrderMonitor:
         price = await self.chain.get_registration_price(order.netuid)
         order.last_price = price.burn_tao
         order.last_price_at = iso(utc_now())
-
-        if self._should_notify_price(order):
-            await self._notify_price(order)
-
         self.store.save(order)
 
         if order.registrations_done >= order.reg_n:
@@ -190,28 +199,32 @@ class OrderMonitor:
             )
             return True
 
-        if price.burn_tao > order.reg_at:
-            return False
+        if price.burn_tao <= order.reg_at:
+            if order.id in self._registering:
+                logger.debug(
+                    "Registration in progress order=%s wallet=%s/%s",
+                    order.id[:8],
+                    order.wallet_name,
+                    order.hotkey,
+                )
+                return False
 
-        if order.id in self._registering:
-            logger.debug(
-                "Registration in progress order=%s wallet=%s/%s",
+            logger.info(
+                "Target hit order=%s SN%d wallet=%s/%s price=%.6f target=%.6f",
                 order.id[:8],
+                order.netuid,
                 order.wallet_name,
                 order.hotkey,
+                price.burn_tao,
+                order.reg_at,
             )
-            return False
+            return await self._attempt_registration(order, price.burn_tao)
 
-        logger.info(
-            "Target hit order=%s SN%d wallet=%s/%s price=%.6f target=%.6f",
-            order.id[:8],
-            order.netuid,
-            order.wallet_name,
-            order.hotkey,
-            price.burn_tao,
-            order.reg_at,
-        )
-        return await self._attempt_registration(order, price.burn_tao)
+        if self._should_notify_price(order):
+            await self._notify_price(order)
+            self.store.save(order)
+
+        return False
 
     async def _notify_wallet_locked(
         self, order: RegistrationOrder, price_tao: float, detail: str
@@ -341,6 +354,9 @@ class OrderMonitor:
                 "unlock",
                 "insufficient",
                 "price moved",
+                "pricelimit",
+                "price limit",
+                "chain connection",
             )
         )
         if "password" in result.message.lower() or "invalid" in result.message.lower():
