@@ -81,6 +81,7 @@ def build_application(settings: Settings) -> Application:
         wallet_path=str(settings.wallet_path),
         slippage=settings.slippage_tolerance,
         price_notify_interval_sec=settings.price_notify_interval_sec,
+        history_keep_limit=settings.order_history_limit,
         notifier=notifier,
     )
 
@@ -136,9 +137,13 @@ def _make_post_init(settings: Settings, chain: ChainService, monitor: OrderMonit
             _chain_health_loop(chain), name="chain-health"
         )
         if settings.order_auto_purge:
-            removed = store.purge_stale_globally(settings.order_history_days)
+            removed = store.purge_excess_history(keep=settings.order_history_limit)
             if removed:
-                logger.info("Auto-purged %d stale orders (>%d days)", removed, settings.order_history_days)
+                logger.info(
+                    "Auto-purged %d old order file(s); keeping %d recent inactive per user",
+                    removed,
+                    settings.order_history_limit,
+                )
         await monitor.start()
         logger.info("Bot started; restored %d active orders", monitor.active_count)
 

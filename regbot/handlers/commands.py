@@ -164,8 +164,8 @@ async def clearorders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         removed = svc.purge_inactive(user_id=user_id, all_inactive=True)
         label = "all finished"
     else:
-        removed = svc.purge_inactive(user_id=user_id, older_than_days=cfg.order_history_days)
-        label = f"older than {cfg.order_history_days} days"
+        removed = svc.purge_excess_history(keep=cfg.order_history_limit, user_id=user_id)
+        label = f"beyond the latest {cfg.order_history_limit} finished"
 
     if removed == 0:
         await notifier(context).reply_html(

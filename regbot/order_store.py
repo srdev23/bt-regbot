@@ -120,3 +120,41 @@ class OrderStore:
 
     def purge_stale_globally(self, older_than_days: int) -> int:
         return self.purge_inactive(older_than_days=older_than_days, all_inactive=False)
+
+    def purge_excess_history(self, *, keep: int, user_id: int | None = None) -> int:
+        """Delete inactive order files beyond the recent-history limit.
+
+        Always keeps every active order file. For each user, keeps the newest
+        `keep` inactive orders and deletes the rest.
+        """
+        if keep < 0:
+            raise ValueError("keep must be >= 0")
+
+        orders = self.list_all()
+        active_ids = {o.id for o in orders if o.status not in INACTIVE_STATUSES}
+
+        inactive_by_user: dict[int, list[RegistrationOrder]] = {}
+        for order in orders:
+            if order.status not in INACTIVE_STATUSES:
+                continue
+            if user_id is not None and order.user_id != user_id:
+                continue
+            inactive_by_user.setdefault(order.user_id, []).append(order)
+
+        keep_ids = set(active_ids)
+        for user_orders in inactive_by_user.values():
+            user_orders.sort(key=lambda o: o.created_at, reverse=True)
+            for order in user_orders[:keep]:
+                keep_ids.add(order.id)
+
+        removed = 0
+        for order in orders:
+            if order.id in keep_ids:
+                continue
+            if order.status not in INACTIVE_STATUSES:
+                continue
+            if user_id is not None and order.user_id != user_id:
+                continue
+            if self.delete(order.id):
+                removed += 1
+        return removed

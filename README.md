@@ -60,7 +60,7 @@ TELEGRAM_BOT_TOKEN=your_bot_token
 | `PRICE_NOTIFY_INTERVAL_SEC` | `60` | How often to rotate the price message (send new, delete old) |
 | `TELEGRAM_CHAT_MIN_INTERVAL_SEC` | `1.2` | Min seconds between Telegram API calls per chat (avoids 429) |
 | `ORDER_LIST_LIMIT` | `10` | Max active orders shown in `/orders` |
-| `ORDER_HISTORY_LIMIT` | `15` | Max history orders shown |
+| `ORDER_HISTORY_LIMIT` | `15` | Max finished orders kept on disk and shown in history |
 | `ORDER_HISTORY_DAYS` | `30` | Purge finished orders older than N days |
 | `ORDER_AUTO_PURGE` | `true` | Auto-purge stale orders on startup |
 
@@ -75,7 +75,7 @@ TELEGRAM_BOT_TOKEN=your_bot_token
 | `/order <id>` | Order details |
 | `/status` | Monitoring summary |
 | `/cancelorder <id>` | Cancel an active order |
-| `/clearorders` | Remove finished orders older than 30 days |
+| `/clearorders` | Remove finished orders beyond the history limit |
 | `/clearorders all` | Remove all finished orders |
 | `/price <netuid>` | Current registration price |
 | `/wallets` | List local wallets and hotkeys |
@@ -99,4 +99,4 @@ After a bot restart, use `/unlock <wallet_name>` before pending orders can auto-
 
 - Each hotkey registers once per subnet. Use different hotkeys for multiple registrations.
 - Price monitoring sends one message per order and rotates it every notify interval (new message, old deleted).
-- Finished orders are auto-purged after 30 days (configurable).
+- Finished order JSON files are auto-purged on startup and after each order completes, keeping only active orders plus the latest history limit (default 15).

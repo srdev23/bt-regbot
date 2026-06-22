@@ -34,6 +34,7 @@ class OrderMonitor:
         wallet_path: str,
         slippage: float,
         price_notify_interval_sec: int,
+        history_keep_limit: int,
         notifier: TelegramNotifier,
     ) -> None:
         self.store = store
@@ -42,6 +43,7 @@ class OrderMonitor:
         self.wallet_path = wallet_path
         self.slippage = slippage
         self.price_notify_interval_sec = price_notify_interval_sec
+        self.history_keep_limit = history_keep_limit
         self.notifier = notifier
         self._tasks: dict[str, asyncio.Task] = {}
         self._registering: set[str] = set()
@@ -105,6 +107,9 @@ class OrderMonitor:
         if remove_price:
             await self._remove_price_message(order)
         self.store.save(order)
+        removed = self.store.purge_excess_history(keep=self.history_keep_limit)
+        if removed:
+            logger.info("Purged %d old order file(s)", removed)
         await self.notifier.send(order.chat_id, message)
 
     async def _run_order(self, order_id: str) -> None:
