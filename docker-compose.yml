@@ -1,0 +1,13 @@
+services:
+  sn-reg-bot:
+    build: .
+    container_name: sn-reg-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      # Persist wallets, orders DB, and logs across restarts
+      - ./data:/app/data
+    network_mode: bridge
