@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from telegram import Update
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -88,6 +89,10 @@ _CHAIN_HEALTH_INTERVAL_SEC = 300
 async def _error_handler(update: object, context) -> None:
     exc = context.error
     owner_alerts = context.application.bot_data.get("owner_alerts")
+
+    if update is None and isinstance(exc, (NetworkError, TimedOut)):
+        logger.warning("Transient Telegram network error (polling): %s", exc)
+        return
     if isinstance(exc, ChainConnectionError):
         logger.warning("Chain connection error (update=%s): %s", update, exc)
         if owner_alerts is not None:

@@ -79,7 +79,6 @@ class WalletSessionManager:
     def install_password_env(wallet: Wallet, password: str) -> None:
         wallet.coldkey_file.save_password_to_env(password)
         if wallet.hotkey_file.exists_on_device() and wallet.hotkey_file.is_encrypted():
-            wallet.get_hotkey(password=password)
             wallet.hotkey_file.save_password_to_env(password)
 
     def _password_for(self, wallet_name: str) -> str:
@@ -112,9 +111,10 @@ class WalletSessionManager:
     def prepare_for_signing(
         self, wallet_name: str, hotkey: str, wallet_path: str
     ) -> Wallet:
-        wallet = self.unlock(wallet_name, hotkey, wallet_path)
-        wallet.unlock_coldkey()
-        return wallet
+        return self.unlock(wallet_name, hotkey, wallet_path)
+
+    def has_prepared_wallet(self, wallet_name: str, hotkey: str) -> bool:
+        return (wallet_name, hotkey) in self._wallets
 
     def try_unlock_passwordless(
         self, wallet_name: str, hotkey: str, wallet_path: str

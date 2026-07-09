@@ -334,13 +334,8 @@ class WalletService:
                 continue
             try:
                 password = self.password_store.decrypt_record(record)
-                hotkeys = manager.get_hotkeys(record.wallet_name) or ["default"]
-                self._commit_unlock(
-                    record.user_id,
-                    record.wallet_name,
-                    password,
-                    hotkeys,
-                    manager=manager,
+                self.sessions.for_user(record.user_id).mark_unlocked(
+                    record.wallet_name, password
                 )
                 restored += 1
             except Exception as exc:
