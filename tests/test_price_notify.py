@@ -48,12 +48,12 @@ def test_should_notify_immediately_when_no_message_id():
     assert c._should_notify_price(order) is True
 
 
-def test_should_retry_soon_when_message_id_lost_but_recent_notify():
+def test_should_retry_after_interval_when_message_id_lost():
     c = _coordinator()
-    recent = iso(utc_now() - timedelta(seconds=5))
+    recent = iso(utc_now() - timedelta(seconds=30))
     order = _order(price_message_id=None, last_price_notify_at=recent)
     assert c._should_notify_price(order) is False
-    older = iso(utc_now() - timedelta(seconds=15))
+    older = iso(utc_now() - timedelta(seconds=65))
     order = _order(price_message_id=None, last_price_notify_at=older)
     assert c._should_notify_price(order) is True
 

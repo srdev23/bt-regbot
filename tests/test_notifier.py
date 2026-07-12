@@ -137,3 +137,16 @@ async def test_short_retry_after_waits_and_retries(notifier):
 
     assert ok is True
     assert bot.send_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_replace_price_message_edits_when_backoff(notifier):
+    n, bot = notifier
+    n._set_backoff(100, 3600.0)
+    bot.edit_message_text = AsyncMock()
+
+    msg_id = await n.replace_price_message(100, "<b>price</b>", old_message_id=42)
+
+    assert msg_id == 42
+    bot.edit_message_text.assert_awaited_once()
+    bot.send_message.assert_not_awaited()

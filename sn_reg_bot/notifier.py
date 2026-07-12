@@ -31,6 +31,9 @@ class TelegramNotifier:
     def bind(self, bot) -> None:
         self._bot = bot
 
+    def chat_in_backoff(self, chat_id: int) -> bool:
+        return self._in_backoff(chat_id)
+
     def _lock(self, chat_id: int) -> asyncio.Lock:
         if chat_id not in self._chat_locks:
             self._chat_locks[chat_id] = asyncio.Lock()
@@ -68,11 +71,11 @@ class TelegramNotifier:
             logger.warning("Notifier not bound; dropping message to chat %s", chat_id)
             return False
         if self._in_backoff(chat_id):
-            logger.warning("Skipping Telegram send chat=%s (flood-control backoff)", chat_id)
+            logger.debug("Skipping Telegram send chat=%s (flood-control backoff)", chat_id)
             return False
         async with self._lock(chat_id):
             if self._in_backoff(chat_id):
-                logger.warning("Skipping Telegram send chat=%s (flood-control backoff)", chat_id)
+                logger.debug("Skipping Telegram send chat=%s (flood-control backoff)", chat_id)
                 return False
             await self._throttle(chat_id)
             try:
@@ -123,10 +126,18 @@ class TelegramNotifier:
         if self._bot is None:
             return None
         if self._in_backoff(chat_id):
+            if old_message_id is not None:
+                edited = await self._edit_price_message(chat_id, text, old_message_id)
+                if edited is not None:
+                    return edited
             logger.debug("Skipping price alert chat=%s (flood-control backoff)", chat_id)
             return None
         async with self._lock(chat_id):
             if self._in_backoff(chat_id):
+                if old_message_id is not None:
+                    edited = await self._edit_price_message(chat_id, text, old_message_id)
+                    if edited is not None:
+                        return edited
                 logger.debug("Skipping price alert chat=%s (flood-control backoff)", chat_id)
                 return None
             if old_message_id is not None:
@@ -146,13 +157,46 @@ class TelegramNotifier:
                     chat_id=chat_id,
                 )
             except TelegramRateLimitedError:
+                if old_message_id is not None:
+                    return await self._edit_price_message(chat_id, text, old_message_id)
                 return None
             except Exception as exc:
                 logger.warning("Telegram price alert send failed: %s", exc)
                 self._mark_sent(chat_id)
+                if old_message_id is not None:
+                    return await self._edit_price_message(chat_id, text, old_message_id)
                 return None
             self._mark_sent(chat_id)
             return message.message_id
+
+    async def _edit_price_message(
+        self, chat_id: int, text: str, message_id: int
+    ) -> int | None:
+        """Silent in-place update when delete+send is blocked by flood control."""
+        if self._bot is None:
+            return None
+        try:
+            await self._with_retry(
+                lambda: self._bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                ),
+                chat_id=chat_id,
+            )
+            return message_id
+        except BadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return message_id
+            logger.debug("Price alert edit failed chat=%s msg=%s: %s", chat_id, message_id, exc)
+            return None
+        except TelegramRateLimitedError:
+            return None
+        except Exception as exc:
+            logger.debug("Price alert edit failed chat=%s msg=%s: %s", chat_id, message_id, exc)
+            return None
 
     async def refresh_price_message(
         self,

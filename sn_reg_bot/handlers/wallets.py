@@ -18,7 +18,7 @@ from sn_reg_bot.handlers.progress import (
     run_with_progress,
     transient_status,
 )
-from sn_reg_bot.handlers.tg_helpers import answer_callback
+from sn_reg_bot.handlers.tg_helpers import answer_callback, safe_edit_message_text
 from sn_reg_bot.handlers.wizard_state import clear_all_wizards, clear_other_wizards
 
 logger = logging.getLogger(__name__)
@@ -741,7 +741,7 @@ async def removewallet_callback(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
 
     if data == "removewallet:no":
-        await query.edit_message_text("Cancelled.")
+        await safe_edit_message_text(query, "Cancelled.")
         return
 
     if data.startswith("removewallet:pick:"):
@@ -754,7 +754,8 @@ async def removewallet_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 ]
             ]
         )
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             f"⚠️ Remove wallet <b>{name}</b>?\n"
             "This deletes wallet files from the bot. Cancel active orders first.",
             reply_markup=keyboard,
@@ -765,17 +766,18 @@ async def removewallet_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith("removewallet:yes:"):
         name = data.split(":", 2)[2]
         uid = user_id(update)
-        await query.edit_message_text("⏳ Removing wallet...")
+        await safe_edit_message_text(query, "⏳ Removing wallet...")
         try:
             await wallet_service(context).remove_wallet(uid, name)
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 f"🗑 Wallet <b>{name}</b> removed.",
                 parse_mode="HTML",
             )
         except WalletInUseError as exc:
-            await query.edit_message_text(f"❌ {exc}")
+            await safe_edit_message_text(query, f"❌ {exc}")
         except Exception as exc:
-            await query.edit_message_text(f"❌ Failed to remove wallet: {exc}")
+            await safe_edit_message_text(query, f"❌ Failed to remove wallet: {exc}")
 
 
 # --- Import hotkey wizard ---

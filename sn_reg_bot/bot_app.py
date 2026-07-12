@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from telegram import Update
-from telegram.error import NetworkError, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -93,6 +93,34 @@ async def _error_handler(update: object, context) -> None:
     if update is None and isinstance(exc, (NetworkError, TimedOut)):
         logger.warning("Transient Telegram network error (polling): %s", exc)
         return
+    if isinstance(exc, RetryAfter):
+        logger.warning(
+            "Telegram flood control (update=%s): retry in %.0fs",
+            update,
+            exc.retry_after,
+        )
+        if isinstance(update, Update) and update.callback_query:
+            try:
+                await update.callback_query.answer(
+                    "Telegram rate limit — please wait and try again.",
+                    show_alert=True,
+                )
+            except Exception:
+                pass
+        return
+    if isinstance(exc, BadRequest):
+        lowered = str(exc).lower()
+        if any(
+            token in lowered
+            for token in (
+                "message is not modified",
+                "message to edit not found",
+                "query is too old",
+                "query id is invalid",
+            )
+        ):
+            logger.debug("Ignoring Telegram BadRequest (update=%s): %s", update, exc)
+            return
     if isinstance(exc, ChainConnectionError):
         logger.warning("Chain connection error (update=%s): %s", update, exc)
         if owner_alerts is not None:

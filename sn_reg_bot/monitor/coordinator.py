@@ -128,12 +128,6 @@ class OrderMonitorCoordinator:
 
     async def start(self) -> None:
         if self._loop_task is None or self._loop_task.done():
-            reset = await self.orders.reset_price_alert_tracking_for_active()
-            if reset:
-                logger.info(
-                    "Reset price alert tracking for %d active order(s) — fresh alerts on next tick",
-                    reset,
-                )
             self._loop_task = asyncio.create_task(self._monitor_loop(), name="order-monitor")
             logger.info("Monitor loop started")
 
@@ -228,6 +222,7 @@ class OrderMonitorCoordinator:
         at_target: list[Order] = []
         to_refresh: list[Order] = []
         to_notify: list[Order] = []
+        chats_scheduled: set[int] = set()
 
         for order in orders:
             fresh = await self.orders.get(order.id)
@@ -258,10 +253,14 @@ class OrderMonitorCoordinator:
                         if (
                             order.id not in self._price_notify_inflight
                             and self._should_replace_price(order)
+                            and order.chat_id not in chats_scheduled
                         ):
                             to_refresh.append(order)
+                            chats_scheduled.add(order.chat_id)
                 elif self._should_notify_price(order):
-                    to_notify.append(order)
+                    if order.chat_id not in chats_scheduled:
+                        to_notify.append(order)
+                        chats_scheduled.add(order.chat_id)
 
         if at_target:
             for target_price, group in group_orders_for_batch(at_target).items():
@@ -455,11 +454,17 @@ class OrderMonitorCoordinator:
             old_message_id=old_message_id,
         )
         if message_id is None:
-            await self.orders.clear_price_message_if_active(fresh.id)
-            await self.orders.reset_price_notify_if_active(fresh.id)
-            logger.warning(
-                "Price alert send failed order=%s chat=%s", fresh.id[:8], chat_id
-            )
+            await self.orders.touch_price_notify_if_active(fresh.id)
+            if self.notifier.chat_in_backoff(chat_id):
+                logger.debug(
+                    "Price alert deferred (flood control) order=%s chat=%s",
+                    fresh.id[:8],
+                    chat_id,
+                )
+            else:
+                logger.warning(
+                    "Price alert send failed order=%s chat=%s", fresh.id[:8], chat_id
+                )
             return
 
         now = iso(utc_now())
@@ -547,11 +552,10 @@ class OrderMonitorCoordinator:
         if order.price_message_id is not None:
             return False
         interval = self.settings.price_notify_interval_sec
-        lost_message_retry = min(interval, max(self.settings.monitor_tick_sec * 2, 10))
         if order.last_price_notify_at is None:
             return True
         elapsed = (utc_now() - parse_iso(order.last_price_notify_at)).total_seconds()
-        return elapsed >= lost_message_retry
+        return elapsed >= interval
 
     def _should_replace_price(self, order: Order) -> bool:
         """Throttle delete+send replaces to avoid Telegram flood control."""

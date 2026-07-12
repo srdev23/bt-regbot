@@ -311,6 +311,19 @@ class OrderRepository:
         await self._db.conn.commit()
         return cursor.rowcount > 0
 
+    async def touch_price_notify_if_active(self, order_id: str) -> bool:
+        """Record a failed/deferred alert attempt without clearing the message id."""
+        now = iso(utc_now())
+        cursor = await self._db.conn.execute(
+            """
+            UPDATE orders SET last_price_notify_at = ?, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (now, now, order_id, OrderStatus.ACTIVE.value),
+        )
+        await self._db.conn.commit()
+        return cursor.rowcount > 0
+
     async def complete_if_active(
         self, order_id: str, *, last_tx_id: str | None = None
     ) -> bool:
