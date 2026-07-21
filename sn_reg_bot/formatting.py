@@ -23,6 +23,20 @@ def fmt_lock_status(status: str) -> str:
     return "🔒 Locked"
 
 
+def fmt_ss58(ss58: str | None, *, label: str = "Address") -> str:
+    """Copyable SS58 line for Telegram HTML (tap <code> to copy)."""
+    if not ss58:
+        return f"{label}: unavailable"
+    return f"{label}: <code>{esc(ss58)}</code>"
+
+
+def fmt_explorer_link(ss58: str | None) -> str | None:
+    if not ss58:
+        return None
+    # taostats has stable /account/{ss58} pages; paste the same address into tao.app to fund.
+    return f'<a href="https://taostats.io/account/{esc(ss58)}">View on taostats</a>'
+
+
 def fmt_order_summary(order: Order) -> str:
     p = order.params
     status_icon = {

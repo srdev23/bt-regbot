@@ -48,6 +48,7 @@ from sn_reg_bot.handlers.orders import (
 from sn_reg_bot.handlers.router import wizard_text_router
 from sn_reg_bot.handlers.user_tracking import track_user_update
 from sn_reg_bot.handlers.wallets import (
+    address_cmd,
     createhotkey_callback,
     createhotkey_overwrite_callback,
     createhotkey_start,
@@ -265,6 +266,7 @@ def build_application(settings: Settings) -> Application:
     app.add_handler(CommandHandler("notify", owner_only(notify_cmd)))
     app.add_handler(CommandHandler("wallets", guarded(wallets_cmd)))
     app.add_handler(CommandHandler("wallet", guarded(wallet_status_cmd)))
+    app.add_handler(CommandHandler("address", guarded(address_cmd)))
     app.add_handler(CommandHandler("price", guarded(price_cmd)))
     app.add_handler(CommandHandler("orders", guarded(orders_cmd)))
     app.add_handler(CommandHandler("order", guarded(order_cmd)))

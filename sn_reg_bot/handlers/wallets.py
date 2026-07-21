@@ -9,7 +9,7 @@ from tempfile import NamedTemporaryFile
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from sn_reg_bot.formatting import fmt_lock_status, fmt_tao
+from sn_reg_bot.formatting import fmt_explorer_link, fmt_lock_status, fmt_ss58, fmt_tao
 from sn_reg_bot.handlers.common import chat_id, user_id, wallet_service
 from sn_reg_bot.handlers.progress import (
     progress_message,
@@ -29,6 +29,15 @@ _WALLET_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 def _clear_flow(context: ContextTypes.DEFAULT_TYPE, key: str) -> None:
     context.user_data.pop(key, None)
 
+
+def _format_wallet_address_block(name: str, ss58: str | None) -> str:
+    lines = [f"<b>{name}</b>", fmt_ss58(ss58)]
+    link = fmt_explorer_link(ss58)
+    if link:
+        lines.append(link)
+    return "\n".join(lines)
+
+
 async def wallets_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = user_id(update)
     msg = update.effective_message
@@ -45,10 +54,51 @@ async def wallets_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         bal = fmt_tao(entry.balance)
         hk = ", ".join(entry.hotkeys) if entry.hotkeys else "(no hotkeys)"
         lock = fmt_lock_status(entry.lock_status)
-        lines.append(f"• <b>{entry.name}</b> — {bal} — {lock}\n  Hotkeys: {hk}")
+        block = [
+            f"• <b>{entry.name}</b> — {bal} — {lock}",
+            f"  {fmt_ss58(entry.ss58)}",
+        ]
+        link = fmt_explorer_link(entry.ss58)
+        if link:
+            block.append(f"  {link}")
+        block.append(f"  Hotkeys: {hk}")
+        lines.append("\n".join(block))
     await msg.reply_text(
-        "<b>Your wallets</b>\n" + "\n\n".join(lines),
+        "<b>Your wallets</b>\n"
+        "<i>Tap an address to copy · send TAO to that address for registration</i>\n\n"
+        + "\n\n".join(lines)
+        + "\n\nUse /address for address-only view.",
         parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+async def address_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show copyable coldkey SS58 addresses for funding / explorer lookup."""
+    uid = user_id(update)
+    msg = update.effective_message
+    name = context.args[0] if context.args else None
+    ws = wallet_service(context)
+
+    try:
+        rows = await ws.list_wallet_addresses(uid, name)
+    except PermissionError as exc:
+        await msg.reply_text(str(exc))
+        return
+
+    if not rows:
+        await msg.reply_text("No wallets yet. Use /createwallet or /importwallet.")
+        return
+
+    blocks = [_format_wallet_address_block(n, ss58) for n, ss58 in rows]
+    header = (
+        "<b>Wallet addresses</b>\n"
+        "<i>Tap an address to copy. Paste it in tao.app or send TAO to fund registration.</i>"
+    )
+    await msg.reply_text(
+        header + "\n\n" + "\n\n".join(blocks),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
 
 
@@ -64,7 +114,7 @@ async def wallet_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return await wallet_service(context).get_coldkey_status(uid, name)
 
     try:
-        statuses, lock_status = await run_with_progress(
+        statuses, lock_status, coldkey_ss58 = await run_with_progress(
             msg, _load, text="⏳ Loading wallet status from chain..."
         )
     except (PermissionError, FileNotFoundError) as exc:
@@ -72,22 +122,37 @@ async def wallet_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     lock = fmt_lock_status(lock_status)
+    lines = [
+        f"<b>Coldkey {name}</b> — {lock}",
+        fmt_ss58(coldkey_ss58, label="Coldkey address"),
+    ]
+    link = fmt_explorer_link(coldkey_ss58)
+    if link:
+        lines.append(link)
+    lines.append("<i>Tap address to copy · fund this address with TAO for registration</i>")
+
     if not statuses:
+        lines.append("\nNo hotkeys yet. Use /createhotkey or /importhotkey.")
         await msg.reply_text(
-            f"<b>Coldkey {name}</b> — {lock}\nNo hotkeys yet. Use /createhotkey or /importhotkey.",
+            "\n".join(lines),
             parse_mode="HTML",
+            disable_web_page_preview=True,
         )
         return
 
-    lines = [f"<b>Coldkey {name}</b> — {lock}"]
+    lines.append("")
     for st in statuses:
         nets = ", ".join(f"SN{n}" for n in st.registered_netuids) or "none"
         lines.append(
             f"• <b>{st.hotkey_name}</b>\n"
-            f"  SS58: <code>{st.hotkey_ss58}</code>\n"
+            f"  Hotkey SS58: <code>{st.hotkey_ss58}</code>\n"
             f"  Registered: {nets}"
         )
-    await msg.reply_text("\n".join(lines), parse_mode="HTML")
+    await msg.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 async def _start_unlock_wallet(

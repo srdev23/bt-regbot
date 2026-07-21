@@ -11,8 +11,9 @@ BOT_MENU_COMMANDS: list[BotCommand] = [
     BotCommand("start", "Welcome message"),
     BotCommand("help", "List all commands"),
     # Wallets
-    BotCommand("wallets", "List wallets and balances"),
-    BotCommand("wallet", "Coldkey status (hotkeys + subnets)"),
+    BotCommand("wallets", "List wallets, balances, and addresses"),
+    BotCommand("wallet", "Coldkey status (address + hotkeys)"),
+    BotCommand("address", "Copy coldkey address (fund / tao.app)"),
     BotCommand("createwallet", "Create a new coldkey"),
     BotCommand("importwallet", "Import coldkey (mnemonic or file)"),
     BotCommand("createhotkey", "Create a hotkey on a coldkey"),

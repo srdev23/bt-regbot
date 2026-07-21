@@ -33,8 +33,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "<b>Wallet commands</b>\n"
-        "/wallets — list your wallets and balances\n"
-        "/wallet &lt;name&gt; — coldkey status (hotkeys + registered subnets)\n"
+        "/wallets — list your wallets, balances, and addresses\n"
+        "/wallet &lt;name&gt; — coldkey status (address, hotkeys, subnets)\n"
+        "/address [name] — copy coldkey address (fund / tao.app)\n"
         "/createwallet — create a new coldkey\n"
         "/importwallet — import coldkey from mnemonic or wallet file\n"
         "/createhotkey — create a hotkey on a coldkey\n"

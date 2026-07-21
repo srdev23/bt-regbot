@@ -11,8 +11,18 @@ from sn_reg_bot.services.order_service import OrderNotEditableError
 
 
 def _order_button_label(order) -> str:
+    """Inline button text — must stay within Telegram's 64-char limit."""
     p = order.params
-    return f"{order.id[:8]} · SN{p.netuid} · ≤{p.max_price_tao:.4f} TAO"
+    wallet = f"{p.coldkey_name}/{p.hotkey_name}"
+    label = f"{order.id[:8]} · {wallet} · SN{p.netuid} · ≤{p.max_price_tao:.4f}"
+    if len(label) <= 64:
+        return label
+    # Prefer keeping wallet identity over price precision when names are long.
+    short = f"{order.id[:8]} · {wallet} · SN{p.netuid}"
+    if len(short) <= 64:
+        return short
+    max_wallet = max(8, 64 - len(f"{order.id[:8]} ·  · SN{p.netuid}"))
+    return f"{order.id[:8]} · {wallet[:max_wallet]} · SN{p.netuid}"
 
 
 async def _apply_price_edit(
@@ -38,7 +48,7 @@ async def _apply_price_edit(
     p = order.params
     await msg.reply_text(
         f"✅ Updated order <code>{order.id[:8]}</code>\n"
-        f"SN{p.netuid} · {p.coldkey_name}/{p.hotkey_name}\n"
+        f"SN{p.netuid} · <b>{p.coldkey_name}/{p.hotkey_name}</b>\n"
         f"New max price: ≤ <b>{p.max_price_tao:.6f}</b> TAO",
         parse_mode="HTML",
     )
@@ -89,8 +99,10 @@ async def editorder_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ]
     )
     await msg.reply_text(
-        "Select an active order to edit its max registration price:",
+        "Select an active order to edit its max registration price:\n"
+        "<i>id · coldkey/hotkey · subnet · max price</i>",
         reply_markup=keyboard,
+        parse_mode="HTML",
     )
 
 
@@ -112,7 +124,7 @@ async def editorder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         p = order.params
         await query.edit_message_text(
             f"Order <code>{order.id[:8]}</code> · SN{p.netuid}\n"
-            f"{p.coldkey_name}/{p.hotkey_name}\n"
+            f"Wallet: <b>{p.coldkey_name}/{p.hotkey_name}</b>\n"
             f"Current max price: ≤ <b>{p.max_price_tao:.6f}</b> TAO\n\n"
             "Send the new max registration price in TAO:",
             parse_mode="HTML",

@@ -32,6 +32,7 @@ class WalletListEntry:
     balance: float | None
     hotkeys: list[str]
     lock_status: str  # unlocked | passwordless | locked
+    ss58: str | None = None
 
 
 class WalletService:
@@ -123,6 +124,7 @@ class WalletService:
                 balance=balance,
                 hotkeys=info.hotkeys,
                 lock_status=self.get_lock_status(user_id, info.name),
+                ss58=manager.try_read_coldkey_ss58(info.name),
             )
 
         return await asyncio.gather(*(_fetch(w) for w in wallets))
@@ -132,6 +134,22 @@ class WalletService:
     ) -> list[tuple[str, float | None, list[str]]]:
         entries = await self.list_wallets_with_balances(user_id)
         return [(e.name, e.balance, e.hotkeys) for e in entries]
+
+    def get_coldkey_ss58(self, user_id: int, coldkey_name: str) -> str | None:
+        manager = self.manager_for(user_id)
+        manager.validate_wallet_access(coldkey_name)
+        return manager.try_read_coldkey_ss58(coldkey_name)
+
+    async def list_wallet_addresses(
+        self, user_id: int, coldkey_name: str | None = None
+    ) -> list[tuple[str, str | None]]:
+        """Return (name, ss58) pairs for one coldkey or all wallets."""
+        await self.ensure_user(user_id)
+        manager = self.manager_for(user_id)
+        if coldkey_name is not None:
+            manager.validate_wallet_access(coldkey_name)
+            return [(coldkey_name, manager.try_read_coldkey_ss58(coldkey_name))]
+        return [(w.name, manager.try_read_coldkey_ss58(w.name)) for w in manager.list_wallets()]
 
     async def get_coldkey_status(self, user_id: int, coldkey_name: str):
         await self.ensure_user(user_id)
@@ -143,7 +161,8 @@ class WalletService:
             hotkeys,
             str(self.settings.user_wallet_path(user_id)),
         )
-        return statuses, self.get_lock_status(user_id, coldkey_name)
+        ss58 = manager.try_read_coldkey_ss58(coldkey_name)
+        return statuses, self.get_lock_status(user_id, coldkey_name), ss58
 
     async def create_coldkey(
         self, user_id: int, name: str, password: str, *, overwrite: bool = False

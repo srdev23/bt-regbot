@@ -18,5 +18,6 @@ def test_menu_includes_core_commands():
     assert "addorder" in names
     assert "editorder" in names
     assert "wallets" in names
+    assert "address" in names
     assert "removewallet" in names
     assert "importhotkey" in names
