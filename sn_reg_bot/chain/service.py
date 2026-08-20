@@ -191,7 +191,11 @@ class ChainService:
             burn_raw = await self.subtensor.get_hyperparameter(
                 "Burn", netuid=netuid, block_hash=block_hash
             )
-            burn = Balance.from_rao(int(burn_raw)) if burn_raw else Balance(0)
+            if burn_raw is None:
+                raise RuntimeError(
+                    f"Could not fetch Burn hyperparameter for SN{netuid}"
+                )
+            burn = Balance.from_rao(int(burn_raw))
             return RegistrationPrice(netuid=netuid, burn_tao=float(burn.tao), burn=burn)
 
         return await self._call(_do)
@@ -199,7 +203,10 @@ class ChainService:
     async def subnet_exists(self, netuid: int) -> bool:
         async def _do() -> bool:
             block_hash = await self.subtensor.substrate.get_chain_head()
-            return await self.subtensor.subnet_exists(netuid=netuid, block_hash=block_hash)
+            result = await self.subtensor.subnet_exists(
+                netuid=netuid, block_hash=block_hash
+            )
+            return bool(result)
 
         return await self._call(_do)
 
@@ -329,7 +336,13 @@ class ChainService:
             burn_raw = await self.subtensor.get_hyperparameter(
                 "Burn", netuid=netuid, block_hash=block_hash
             )
-            burn = Balance.from_rao(int(burn_raw)) if burn_raw else Balance(0)
+            # get_hyperparameter returns None when NetworksAdded briefly
+            # false-negatives ("subnet does not exist"); do not coerce to 0.
+            if burn_raw is None:
+                raise RuntimeError(
+                    f"Could not fetch Burn hyperparameter for SN{netuid}"
+                )
+            burn = Balance.from_rao(int(burn_raw))
             current_block, tempo, blocks_since_last_step = await asyncio.gather(
                 self.subtensor.substrate.get_block_number(block_hash=block_hash),
                 self.subtensor.get_hyperparameter(

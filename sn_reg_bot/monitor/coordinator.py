@@ -28,6 +28,10 @@ from sn_reg_bot.wallet.session import UserWalletSessionManager
 
 logger = logging.getLogger(__name__)
 
+# Transient RPC/node false-negatives for NetworksAdded are common; require
+# sustained misses before permanently failing orders.
+_SUBNET_MISSING_CONFIRM_TICKS = 3
+
 
 @dataclass
 class PendingRegistration:
@@ -70,6 +74,7 @@ class OrderMonitorCoordinator:
         self._background_tasks: set[asyncio.Task] = set()
         self._balance_cache: dict[tuple[int, str, str], tuple[float, float]] = {}
         self._wallet_lock_notified: set[str] = set()
+        self._subnet_missing_ticks: dict[int, int] = {}
         self._active_count = 0
 
     @property
@@ -183,33 +188,69 @@ class OrderMonitorCoordinator:
             if order.order_type == OrderType.SUBNET_REGISTRATION:
                 by_netuid[order.params.netuid].append(order)
 
-        netuids = list(by_netuid.keys())
-        existence = await asyncio.gather(
-            *(self.chain.subnet_exists(n) for n in netuids),
-            return_exceptions=True,
-        )
-        prices: dict[int, NetuidRegistrationSnapshot | None] = {}
-        for netuid in netuids:
+        watched = set(by_netuid)
+        self._subnet_missing_ticks = {
+            netuid: count
+            for netuid, count in self._subnet_missing_ticks.items()
+            if netuid in watched
+        }
+
+        for netuid, orders in by_netuid.items():
             try:
-                prices[netuid] = await self.chain.capture_registration_snapshot(netuid)
+                exists = await self.chain.subnet_exists(netuid)
             except ChainConnectionError:
                 raise
             except Exception as exc:
-                logger.warning("Snapshot failed for SN%d: %s", netuid, exc)
-                prices[netuid] = None
+                # Never treat a flaky RPC as permanent subnet deletion.
+                logger.warning(
+                    "subnet_exists check failed for SN%d (skipping tick): %s",
+                    netuid,
+                    exc,
+                )
+                continue
 
-        for netuid, orders, exists in zip(netuids, [by_netuid[n] for n in netuids], existence):
-            if isinstance(exists, Exception) or not exists:
+            if not exists:
+                misses = self._subnet_missing_ticks.get(netuid, 0) + 1
+                self._subnet_missing_ticks[netuid] = misses
+                logger.warning(
+                    "Subnet SN%d reported missing (%d/%d consecutive checks)",
+                    netuid,
+                    misses,
+                    _SUBNET_MISSING_CONFIRM_TICKS,
+                )
+                if misses < _SUBNET_MISSING_CONFIRM_TICKS:
+                    continue
                 for order in orders:
                     await self._fail_order(
                         order,
                         f"Subnet {netuid} does not exist",
-                        notify=f"❌ Order <code>{order.id[:8]}</code> failed: subnet SN{netuid} not found.",
+                        notify=(
+                            f"❌ Order <code>{order.id[:8]}</code> failed: "
+                            f"subnet SN{netuid} not found."
+                        ),
                     )
                 continue
-            snapshot = prices.get(netuid)
-            if snapshot is None:
+
+            self._subnet_missing_ticks.pop(netuid, None)
+
+            try:
+                snapshot = await self.chain.capture_registration_snapshot(netuid)
+            except ChainConnectionError:
+                raise
+            except Exception as exc:
+                logger.warning("Snapshot failed for SN%d: %s", netuid, exc)
                 continue
+
+            # Burn=None inside bittensor becomes Balance(0); that is a fetch
+            # failure, not a free registration. Never treat it as a target hit.
+            if snapshot.price_tao <= 0:
+                logger.warning(
+                    "Skipping SN%d this tick: invalid registration price %.6f",
+                    netuid,
+                    snapshot.price_tao,
+                )
+                continue
+
             await self._process_netuid_orders(
                 netuid, self._prioritize_orders(orders), snapshot
             )
