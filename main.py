@@ -1,34 +1,22 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import logging
-import sys
 
-from telegram import Update
+from sn_reg_bot.bot_app import build_application
+from sn_reg_bot.config import Settings
+from sn_reg_bot.logging_config import setup_logging
 
-from regbot.bot_app import build_application
-from regbot.config import Settings
-
-
-def _configure_logging() -> None:
-    logging.basicConfig(
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        level=logging.INFO,
-    )
-    for name in ("httpx", "httpcore", "telegram", "telegram.ext", "async_substrate_interface"):
-        logging.getLogger(name).setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    _configure_logging()
-    try:
-        settings = Settings.load()
-    except RuntimeError as exc:
-        print(exc, file=sys.stderr)
-        sys.exit(1)
-
+    settings = Settings.load()
+    setup_logging(settings.data_dir / "logs", settings.log_level)
+    if settings.bot_owner_id is not None:
+        logger.info("Bot owner id configured for admin /status")
     app = build_application(settings)
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+    logger.info("Starting SN Registration Bot")
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sn-reg-bot"
+version = "1.0.0"
+description = "Multi-user Bittensor subnet registration Telegram bot"
+requires-python = ">=3.11"
+dependencies = [
+    "python-telegram-bot>=22.0",
+    "python-dotenv>=1.0",
+    "bittensor-cli>=9.22",
+    "bittensor-wallet>=4.1",
+    "aiosqlite>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sn_reg_bot*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

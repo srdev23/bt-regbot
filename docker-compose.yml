@@ -1,16 +1,13 @@
 services:
-  bt-reg-bot:
+  sn-reg-bot:
     build: .
-    container_name: bt-reg-bot
+    container_name: sn-reg-bot
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      BITTENSOR_WALLET_PATH: /wallets
-      ORDERS_DIR: /app/data/orders
+      DATA_DIR: /app/data
     volumes:
-      # Mount your Bittensor wallets (read-only is fine for monitoring; registration needs decrypt access)
-      - ${BITTENSOR_WALLET_HOST_PATH:-~/.bittensor/wallets}:/wallets:ro
+      # Persist wallets, orders DB, and logs across restarts
       - ./data:/app/data
-    # Registration requires outbound access to Bittensor finney network
     network_mode: bridge
